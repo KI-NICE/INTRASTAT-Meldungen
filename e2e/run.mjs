@@ -30,7 +30,7 @@ console.log(await page.locator('.bundled-info').innerText())
 await page.getByRole('button', { name: 'Weiter' }).click()
 
 // Schritt 2: Rechnungen hochladen
-await page.locator('input[type=file]').last().setInputFiles(fx('sample-invoice.pdf'))
+await page.locator('input[type=file]').last().setInputFiles([fx('rechnung-de.pdf'), fx('rechnung-en.pdf')])
 await page.waitForTimeout(300)
 await page.getByRole('button', { name: 'Weiter' }).click()
 
@@ -40,10 +40,10 @@ await page.waitForSelector('text=4. Fehler und offene Zuordnungen bearbeiten', {
 await page.waitForTimeout(500)
 
 console.log('--- PRUEFANSICHT: RECHNUNGSKOPF ---')
-console.log(await page.locator('.invoice-meta').first().innerText())
+for (const meta of await page.locator('.invoice-meta').all()) console.log(await meta.innerText(), '\n---')
 
 console.log('--- PRUEFANSICHT: POSITIONEN ---')
-console.log(await page.locator('.review-table').first().innerText())
+for (const t of await page.locator('.review-table').all()) console.log(await t.innerText(), '\n---')
 
 const issues = await page.locator('.invoice-card .issue').allInnerTexts()
 console.log('--- OFFENE MELDUNGEN ---')

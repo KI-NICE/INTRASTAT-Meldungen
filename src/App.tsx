@@ -15,6 +15,7 @@ import {
   saveManualMapping,
   normalizeProductName,
   saveCountryMapping,
+  saveAddressCountryOverride,
   clearManualMappings,
   clearCountryMappings,
 } from './lib/mappingStore'
@@ -155,14 +156,24 @@ function App() {
     })
   }
 
-  /** Manuell bestätigtes Bestimmungsland – wird für künftige Läufe gespeichert. */
+  /**
+   * Bestätigt bzw. korrigiert das Bestimmungsland. Die Entscheidung wird
+   * adressgenau dauerhaft gemerkt und hat bei künftigen Läufen Vorrang vor der
+   * automatischen Erkennung.
+   */
   function handleConfirmCountry(invoiceId: string, isoCode: string) {
     const invoice = invoices.find((inv) => inv.id === invoiceId)
     if (!invoice) return
 
     const token = invoice.destinationCountry?.token
-    if (isoCode && token) {
-      saveCountryMapping(token, isoCode)
+    const addressRaw = invoice.usedAddress?.raw
+
+    if (isoCode) {
+      saveAddressCountryOverride(addressRaw, isoCode)
+      // Ein unbekanntes Länderkennzeichen zusätzlich allgemein merken.
+      if (token && !invoice.usedAddress?.countryCode) {
+        saveCountryMapping(token, isoCode)
+      }
     }
 
     updateInvoiceById(invoiceId, (inv) => {
@@ -173,6 +184,7 @@ function App() {
           source: isoCode ? 'manual' : 'unresolved',
           isManual: true,
           token: inv.destinationCountry?.token ?? null,
+          needsConfirmation: false,
         },
         manualCorrections: [
           ...inv.manualCorrections,
@@ -187,20 +199,21 @@ function App() {
       return recalculateInvoice(updated, weightList, selectedMonth, selectedYear, sessionMappings)
     })
 
-    // Gleiches Token in anderen Rechnungen ebenfalls übernehmen.
-    if (isoCode && token) {
+    // Dieselbe Adresse in weiteren Rechnungen desselben Durchlaufs übernehmen.
+    if (isoCode && addressRaw) {
       setInvoices((prev) =>
         prev.map((inv) => {
           if (inv.id === invoiceId) return inv
-          if (inv.destinationCountry?.code) return inv
-          if (inv.destinationCountry?.token !== token) return inv
+          if (inv.destinationCountry?.isManual) return inv
+          if (inv.usedAddress?.raw !== addressRaw) return inv
           const updated: Invoice = {
             ...inv,
             destinationCountry: {
               code: isoCode,
-              source: 'gespeichertes-mapping',
+              source: 'gelernte-zuordnung',
               isManual: false,
-              token,
+              token: inv.destinationCountry?.token ?? null,
+              needsConfirmation: false,
             },
           }
           return recalculateInvoice(updated, weightList, selectedMonth, selectedYear, sessionMappings)

@@ -53,12 +53,30 @@ export function validateInvoice(
     )
   }
 
+  if (!invoice.hasFontInfo && !invoice.extractionFailed) {
+    issues.push(
+      makeIssue(
+        'fontInfo',
+        'error',
+        'In dieser PDF ist kein Fettdruck erkennbar (z. B. nach Texterkennung). Positionsnummern, Mengen und die Rechnungsnummer können deshalb nicht sicher gelesen werden – bitte alle Positionen prüfen und bestätigen.',
+      ),
+    )
+  }
+
   if (!invoice.destinationCountry?.code) {
     issues.push(
       makeIssue(
         'destinationCountry',
         'error',
-        'Das Bestimmungsland wurde nicht eindeutig bestimmt. Bitte manuell auswählen.',
+        'Das Bestimmungsland wurde nicht eindeutig bestimmt. Bitte manuell auswählen – die Auswahl wird für diese Adresse gespeichert.',
+      ),
+    )
+  } else if (invoice.destinationCountry.needsConfirmation && !invoice.destinationCountry.isManual) {
+    issues.push(
+      makeIssue(
+        'destinationCountry',
+        'error',
+        `Vorschlag für das Bestimmungsland: „${invoice.destinationCountry.code}“ (nicht aus der Lieferadresse ableitbar). Bitte bestätigen oder korrigieren – die Entscheidung wird für diese Adresse gespeichert.`,
       ),
     )
   }

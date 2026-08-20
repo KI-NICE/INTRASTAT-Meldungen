@@ -38,6 +38,8 @@ function makeInvoice(positions: InvoicePosition[]): Invoice {
     rawText: '',
     ocrUsed: false,
     extractionFailed: false,
+    hasFontInfo: true,
+    language: 'de',
     referenceMonth: '08',
     referenceYear: '2026',
     destinationCountry: { code: 'BE', source: 'delivery', isManual: false },

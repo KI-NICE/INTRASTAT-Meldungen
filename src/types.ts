@@ -3,7 +3,18 @@
 // Abschnitt 9) und erscheinen NIE als Arbeitsblatt/Spalte in der exportierten
 // Excel-Datei.
 
-export type MatchType = 'exact' | 'normalized' | 'prefix' | 'manual' | 'suggested' | 'none'
+export type MatchType =
+  | 'exact'
+  | 'normalized'
+  | 'prefix'
+  /** Gewicht stand direkt in der Produktbeschreibung (z. B. "Gew.:20 g"). */
+  | 'beschreibung'
+  | 'manual'
+  | 'suggested'
+  | 'none'
+
+/** Sprache der Rechnung – steuert die erwarteten Feldbezeichnungen. */
+export type InvoiceLanguage = 'de' | 'en'
 
 export type AddressKind = 'delivery' | 'order' | 'recipient'
 
@@ -18,10 +29,19 @@ export type Address = {
 export type DestinationCountryInfo = {
   code: string | null
   /** Woraus der Code stammt – für die Nachvollziehbarkeit in der Prüfansicht. */
-  source: 'delivery' | 'order' | 'recipient' | 'gespeichertes-mapping' | 'manual' | 'unresolved'
+  source:
+    | 'delivery'
+    | 'order'
+    | 'recipient'
+    | 'gelernte-zuordnung'
+    | 'gespeichertes-mapping'
+    | 'manual'
+    | 'unresolved'
   isManual: boolean
   /** Token, unter dem eine manuelle Zuordnung dauerhaft gespeichert wird. */
   token?: string | null
+  /** true, solange ein Vorschlag noch bestätigt werden muss. */
+  needsConfirmation?: boolean
 }
 
 export type ManualCorrection = {
@@ -55,7 +75,10 @@ export type ProductMatch = {
 
 export type InvoicePosition = {
   id: string
+  /** Fortlaufende Nummer in der App (1, 2, 3 …). */
   lineNo: number
+  /** Positionsnummer laut Rechnung (linksbündig fett, z. B. "10", "20"). */
+  positionNumber?: string
   productNameRaw: string
   customsCodeRaw?: string
   customsCode?: string // normalisiert, 8-stellig, als Text
@@ -92,9 +115,14 @@ export type Invoice = {
   rawText: string
   ocrUsed: boolean
   extractionFailed: boolean
+  /** false, wenn kein Fettdruck erkennbar war (z. B. nach OCR). */
+  hasFontInfo: boolean
 
+  /** Erkannte Rechnungssprache (deutsche oder englische Feldbezeichnungen). */
+  language: InvoiceLanguage
+  /** Rechnungsnummer – oben rechts fett neben "RECHNUNG" bzw. "INVOICE". */
   invoiceNumber?: string
-  /** Rechnungsdatum aus dem Feld "vom:" direkt unter der Rechnungsnummer. */
+  /** Rechnungsdatum aus "vom:" bzw. "dated:" unter der Rechnungsnummer. */
   invoiceDateRaw?: string
   referenceMonth?: string // MM, aus dem Rechnungsdatum abgeleitet
   referenceYear?: string // JJJJ, aus dem Rechnungsdatum abgeleitet (intern, für Plausibilität)

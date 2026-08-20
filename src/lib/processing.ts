@@ -1,6 +1,6 @@
 import type { Invoice, InvoicePosition, ProductWeightEntry } from '../types'
 import { extractPdfText } from './pdfExtract'
-import { parseInvoiceText, determineDestinationCountry } from './invoiceParser'
+import { parseInvoiceDocument, determineDestinationCountry } from './invoiceParser'
 import { matchProduct } from './productMatcher'
 import { calculateAmountWithFreight, calculatePositionWeight, calculateStatisticalValues } from './calculations'
 import { validateInvoice } from './validation'
@@ -98,8 +98,8 @@ export async function processInvoiceFile(
   invoiceCounter += 1
   const id = `invoice-${invoiceCounter}-${file.name}`
 
-  const { text, ocrUsed, extractionFailed } = await extractPdfText(file)
-  const fields = parseInvoiceText(text)
+  const { document, ocrUsed, extractionFailed } = await extractPdfText(file)
+  const fields = parseInvoiceDocument(document)
   const destination = determineDestinationCountry(
     fields.deliveryAddress,
     fields.orderAddress,
@@ -109,9 +109,11 @@ export async function processInvoiceFile(
   const baseInvoice: Invoice = {
     id,
     fileName: file.name,
-    rawText: text,
+    rawText: document.text,
+    hasFontInfo: document.hasFontInfo,
     ocrUsed,
     extractionFailed,
+    language: fields.language,
     invoiceNumber: fields.invoiceNumber,
     invoiceDateRaw: fields.invoiceDateRaw,
     referenceMonth: fields.referenceMonth,
@@ -125,6 +127,7 @@ export async function processInvoiceFile(
       source: destination.source,
       isManual: false,
       token: destination.token,
+      needsConfirmation: destination.needsConfirmation,
     },
     vatIdRaw: fields.vatIdRaw,
     vatId: fields.vatId,

@@ -24,9 +24,10 @@ const ADDRESS_KIND_LABEL: Record<string, string> = {
 const COUNTRY_SOURCE_LABEL: Record<string, string> = {
   delivery: 'aus Lieferadresse',
   order: 'aus Auftragsadresse',
-  recipient: 'aus Empfängeradresse',
-  'gespeichertes-mapping': 'aus gespeicherter Zuordnung',
-  manual: 'manuell gewählt',
+  recipient: 'Vorschlag aus Empfängeradresse',
+  'gelernte-zuordnung': 'gelernte Zuordnung für diese Adresse',
+  'gespeichertes-mapping': 'aus gespeicherter Kennzeichen-Zuordnung',
+  manual: 'manuell bestätigt',
   unresolved: 'ungeklärt',
 }
 
@@ -92,7 +93,11 @@ function InvoiceCard({
           <h3>
             {invoice.fileName} <StatusBadge status={invoiceStatus} />
           </h3>
-          {invoice.ocrUsed && <p className="hint">Diese Rechnung wurde teilweise per Texterkennung (OCR) gelesen.</p>}
+          <p className="hint">
+            Sprache: {invoice.language === 'en' ? 'englisch' : 'deutsch'}
+            {invoice.ocrUsed ? ' · teilweise per Texterkennung (OCR) gelesen' : ''}
+            {!invoice.hasFontInfo ? ' · kein Fettdruck erkennbar' : ''}
+          </p>
         </div>
         <button type="button" onClick={() => setShowRawText((v) => !v)}>
           {showRawText ? 'Rohtext ausblenden' : 'Rohtext anzeigen'}
@@ -150,6 +155,15 @@ function InvoiceCard({
               {COUNTRY_SOURCE_LABEL[invoice.destinationCountry?.source ?? 'unresolved']}
               {invoice.destinationCountry?.token ? ` · Kennzeichen „${invoice.destinationCountry.token}“` : ''}
             </span>
+            {invoice.destinationCountry?.needsConfirmation && invoice.destinationCountry.code && (
+              <button
+                type="button"
+                className="confirm-suggestion"
+                onClick={() => onConfirmCountry(invoice.id, invoice.destinationCountry!.code!)}
+              >
+                Vorschlag „{invoice.destinationCountry.code}“ bestätigen und merken
+              </button>
+            )}
           </dd>
         </div>
         <div>
@@ -239,7 +253,9 @@ function InvoiceCard({
                   position.status === 'error' ? 'row--error' : position.status === 'warning' ? 'row--warning' : ''
                 }
               >
-                <td>{position.lineNo}</td>
+                <td>
+                  <strong>{position.positionNumber ?? position.lineNo}</strong>
+                </td>
                 <td>
                   <input
                     className={`code-input ${position.customsCode !== position.customsCodeRaw?.replace(/\D/g, '') ? 'edited' : ''}`}
@@ -379,12 +395,14 @@ function ProductMappingCell({
   if (match?.entry) {
     const typeLabel =
       match.matchType === 'exact'
-        ? 'exakt'
+        ? 'exakter Treffer'
         : match.matchType === 'normalized'
-          ? 'normalisiert'
+          ? 'normalisierter Treffer'
           : match.matchType === 'prefix'
             ? 'über Bezeichnungsanfang'
-            : 'manuell bestätigt'
+            : match.matchType === 'beschreibung'
+              ? `Gewicht aus der Beschreibung (${match.entry.zusatz ?? ''}) – nicht über die Gewichtsliste`
+              : 'manuell bestätigt'
     return (
       <div className={match.matchType === 'manual' ? 'edited product-mapping-cell' : 'product-mapping-cell'}>
         <strong>{match.entry.name}</strong>

@@ -77,7 +77,47 @@ export function lookupCountryMapping(token: string | null | undefined): string |
 export function clearCountryMappings(): void {
   try {
     localStorage.removeItem(COUNTRY_STORAGE_KEY)
+    localStorage.removeItem(ADDRESS_STORAGE_KEY)
   } catch {
     // ignorieren
   }
+}
+
+/* ------------------------------------------- gelernte Adress-Zuordnungen */
+
+const ADDRESS_STORAGE_KEY = 'intrastat-app.address-country-override.v1'
+
+/**
+ * Erzeugt einen stabilen Schlüssel für einen Adressblock. Damit lassen sich
+ * manuelle Abweichungen adressgenau merken, statt sie pauschal auf ein
+ * Länderkennzeichen anzuwenden.
+ */
+export function addressFingerprint(block: string | undefined | null): string | null {
+  if (!block) return null
+  const normalized = block
+    .split(/\r?\n/)
+    .map((line) => line.trim().toLowerCase().replace(/\s+/g, ' '))
+    .filter(Boolean)
+    .join(' | ')
+    .replace(/[.,;:]/g, '')
+  return normalized.length > 0 ? normalized : null
+}
+
+/**
+ * Merkt sich eine manuell gesetzte Länder-Zuordnung für genau diese Adresse.
+ * Sie hat bei künftigen Läufen Vorrang vor der automatischen Erkennung –
+ * so „lernt“ die App bestätigte Abweichungen.
+ */
+export function saveAddressCountryOverride(block: string | undefined | null, isoCode: string): void {
+  const key = addressFingerprint(block)
+  if (!key) return
+  const all = readJson<Record<string, string>>(ADDRESS_STORAGE_KEY, {})
+  all[key] = isoCode
+  writeJson(ADDRESS_STORAGE_KEY, all)
+}
+
+export function lookupAddressCountryOverride(block: string | undefined | null): string | null {
+  const key = addressFingerprint(block)
+  if (!key) return null
+  return readJson<Record<string, string>>(ADDRESS_STORAGE_KEY, {})[key] ?? null
 }

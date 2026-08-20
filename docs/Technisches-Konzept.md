@@ -6,14 +6,29 @@ und hinterlegten Grunddaten).
 
 ## 0. Nachgeschärfte Erkennungs- und Zuordnungsregeln
 
+Die Rechnungen werden mit **Fettdruck und Spaltenpositionen** ausgewertet, nicht
+nur als Fließtext. Ohne diese Information sind Positionsnummer, Menge und
+Rechnungsnummer nicht eindeutig bestimmbar – Preise stehen "per 100" und wären
+sonst von der Menge nicht zu unterscheiden. Technisch wird der Fettdruck über
+die aufgelösten Schriftobjekte von pdf.js ermittelt (`page.commonObjs`), die
+Spalten über die x-Positionen der Tabellenkopfzeile.
+
 | Thema | Festlegung |
 |---|---|
-| Bestimmungsland (Spalte F) | Aus dem **Länderkennzeichen vor der Postleitzahl** der Lieferadresse, ersatzweise der Auftragsadresse: `A` → `AT`, `B` → `BE`, `D` → `DE`, `F` → `FR`, `I` → `IT`, `E` → `ES`, `L` → `LU`, `S` → `SE`, `H` → `HU`, `P` → `PT`, `SLO` → `SI` usw. Ist das Kennzeichen unbekannt, fragt die App nach und speichert die bestätigte Zuordnung dauerhaft. |
-| Produktzuordnung | Zusätzlich zur exakten und normalisierten Zuordnung wird ein **eindeutiger Treffer über den Bezeichnungsanfang** akzeptiert (z. B. „Sprayer K2 rot mit Kappe“ → „Sprayer K2“ = 50 g). Der längste passende Eintrag gewinnt, damit „DPZ Profi 1.5L C+ blau“ nicht auf „DPZ Profi 1.5L“ fällt; Abgrenzung an Wortgrenzen verhindert „Sprayer K20“ → „Sprayer K2“. Bestätigte Zuordnungen werden dauerhaft gespeichert. |
-| Rechnungsdatum / Bezugsmonat | Aus dem Feld `vom:` **direkt unter der Rechnungsnummer**. Felder wie `Ihr Auftrag vom:`, `Bestellung vom:` und `Lieferschein vom:` werden ausdrücklich ausgeschlossen. |
-| Netto-Gesamtgewicht | Aus der Fußzeile hinter der Sternchen-Trennlinie, beschriftet mit `Net weight:` bzw. `Netto:`. Ein Netto-*Geldbetrag* wird nicht damit verwechselt (Prüfung der Einheit). |
-| Menge | Je Position im Format `#.###,## Stück` (deutsches Zahlenformat mit Tausenderpunkt). |
+| Rechnungsnummer | Oben rechts **fett** neben der Überschrift `RECHNUNG` bzw. `INVOICE`. |
+| Rechnungsdatum / Bezugsmonat | Feld `vom:` (deutsch) bzw. `dated:` (englisch). `Ihr Auftrag vom:`, `your order dated:`, `Bestellung vom:` und `Lieferschein vom:` werden ausgeschlossen. |
+| Position | Linksbündige **fette** Ganzzahl (`10`, `20`, …); rechts davon beginnt die Artikelbezeichnung, fortgesetzt über die Folgezeilen der Bezeichnungsspalte. Es werden nur aufsteigende Nummern derselben Spalte akzeptiert. |
+| Menge | Ausschließlich die **fett** gesetzte Zahl (`1000 Stück`, `252 Stück`, englisch `200 pcs`). Nicht-fette Zahlen (Preis pro 100) werden nie als Menge gelesen. |
+| Positionsbetrag | Wert der Betragsspalte, bestimmt über die x-Position der Kopfzeile (`Betrag` deutsch, `Dly.date` englisch). Datumswerte werden ausgeschlossen. |
+| Bestimmungsland (Spalte F) | **Länderkennzeichen vor der Postleitzahl** der Lieferadresse, ersatzweise der Auftragsadresse: `A` → `AT`, `B` → `BE`, `D` → `DE`, `F` → `FR`, `I` → `IT`, `E` → `ES`, `L` → `LU`, `S` → `SE`, `H` → `HU`, `P` → `PT`, `SLO` → `SI` usw. |
+| Mitdenkendes Länder-Mapping | Ist das Land nicht eindeutig aus der Lieferadresse ableitbar, wird das Land einer nachrangigen Adresse als **Vorschlag** angeboten und muss bestätigt werden. Jede Bestätigung oder Korrektur wird **adressgenau** dauerhaft gemerkt und hat künftig Vorrang vor der automatischen Erkennung. Unbekannte Kennzeichen werden zusätzlich allgemein gemerkt. |
+| Flaschenartikel | Bei `Zyl.`, `Zylinderflasche`, `Zylk.`, `FL`, `VK`, `Vierkant` steht das Artikelgewicht in der Produktbeschreibung (`Gew.:20 g`). Dieses Gewicht wird direkt verwendet und **nicht** über die Gewichtsliste ermittelt. |
+| Produktzuordnung | Tokenweiser Abgleich des Bezeichnungsanfangs mit vereinheitlichten Schreibweisen (`1,0 L` = `1.0L`): „DPZ Hobby 1,0 L natur“ → „DPZ Hobby 1.0L“, „Sprayer K2 rot mit Kappe“ → „Sprayer K2“ (50 g). Längster passender Eintrag gewinnt; tokenweiser Vergleich verhindert „Sprayer K20“ → „Sprayer K2“. |
+| Netto-Gesamtgewicht | Fußzeile hinter der Sternchen-Trennlinie, `Net weight:` bzw. `Netto:`. Netto-Geldbeträge werden über die Einheitenprüfung ausgeschlossen. |
+| Sprache | Deutsche und englische Rechnungen werden automatisch unterschieden und mit den jeweiligen Feldbezeichnungen gelesen. |
+| Fehlender Fettdruck | Liefert die PDF keine Schriftinformation (z. B. nach OCR), wird die Rechnung gesperrt und vollständig zur manuellen Prüfung gestellt – es werden keine Mengen geraten. |
 | Grunddaten | Gewichtsliste (`src/data/gewichtsliste.ts`) und Mustertabelle (`src/assets/Mustertabelle.xlsx`) sind **fest im Anwendungspaket hinterlegt** und werden nicht hochgeladen. |
+| pdf.js-Build | Es wird der `legacy`-Build verwendet: der Standard-Build von pdf.js 6 setzt `Map.prototype.getOrInsertComputed` voraus, das aktuelle Browser nicht mitbringen – ohne den legacy-Build schlagen Fettdruck-Erkennung und OCR-Rendering fehl. |
 
 ## 1. Bestätigte fachliche Regeln (Zusammenfassung der Antworten)
 

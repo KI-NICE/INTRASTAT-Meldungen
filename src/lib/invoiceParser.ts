@@ -1,58 +1,121 @@
-import type { Address, AddressKind, Invoice, InvoicePosition } from '../types'
+import type { Address, AddressKind, InvoiceLanguage, InvoicePosition } from '../types'
 import { parseGermanNumber } from './germanNumber'
 import { detectCountryFromAddress } from './countryCodes'
-import { lookupCountryMapping } from './mappingStore'
+import { lookupCountryMapping, lookupAddressCountryOverride } from './mappingStore'
+import {
+  isBoldInteger,
+  textRightOf,
+  type DocumentText,
+  type TextLine,
+  type TextSegment,
+} from './documentText'
 
 /**
- * Parser für die Rechnungsfelder. Die Erkennung folgt den fachlich
- * bestätigten Fundstellen:
+ * Parser für die Rechnungsfelder – auf Basis der fachlich bestätigten
+ * Fundstellen:
  *
- *  - Rechnungsdatum: Feld "vom:" direkt unter der Rechnungsnummer.
- *    Das Feld "Ihr Auftrag vom:" wird ausdrücklich ignoriert.
- *  - Netto-Gesamtgewicht: in der Fußzeile hinter einer Sternchen-Trennlinie,
- *    beschriftet mit "Net weight:" oder "Netto:".
- *  - Menge: je Position im Format "#.###,## Stück".
- *  - Bestimmungsland: Lieferadresse, sonst Auftragsadresse.
+ *  - Rechnungsnummer: oben rechts fett neben "RECHNUNG" bzw. "INVOICE"
+ *  - Rechnungsdatum: "vom:" bzw. englisch "dated:"; "Ihr Auftrag vom:" wird
+ *    ausdrücklich ignoriert
+ *  - Position: linksbündige fette Ganzzahl ("10", "20"); rechts davon beginnt
+ *    die Artikelbezeichnung
+ *  - Menge: ausschließlich die fett gesetzte Zahl (Preise stehen "per 100"
+ *    und dürfen nicht als Menge gelesen werden)
+ *  - Netto-Gesamtgewicht: Fußzeile hinter der Sternchenlinie, "Net weight:"
+ *    bzw. "Netto:"
+ *  - Flaschenartikel ("Zyl.", "Zylinderflasche", "FL", "Zylk.", "VK",
+ *    "Vierkant"): Artikelgewicht steht in der Beschreibung ("Gew.:20 g") und
+ *    wird nicht über die Gewichtsliste ermittelt
  *
- * Grundsatz: Wird ein Feld nicht eindeutig gefunden, bleibt es undefined.
- * Die Validierung markiert die Rechnung dann als klärungsbedürftig – es
- * werden keine Werte geraten.
+ * Grundsatz: Wird ein Feld nicht eindeutig gefunden, bleibt es undefined –
+ * es werden keine Werte geraten.
  */
 
-function extractFirstMatch(text: string, pattern: RegExp): string | undefined {
-  const match = text.match(pattern)
-  return match ? match[1].trim() : undefined
+/* ------------------------------------------------------------------ Sprache */
+
+export function detectLanguage(text: string): InvoiceLanguage {
+  let english = 0
+  let german = 0
+  if (/\bINVOICE\b/.test(text)) english += 2
+  if (/\bdated\s*:/i.test(text)) english += 2
+  if (/\bQuantity\b/i.test(text)) english += 1
+  if (/\bDly\.?\s?date\b/i.test(text)) english += 1
+  if (/\bNet\s*weight\b/i.test(text)) english += 1
+
+  if (/\bRECHNUNG\b/.test(text)) german += 2
+  if (/\bvom\s*:/i.test(text)) german += 2
+  if (/\bMenge\b/.test(text)) german += 1
+  if (/Zolltarif/i.test(text)) german += 1
+  if (/\bNetto\b/.test(text)) german += 1
+
+  return english > german ? 'en' : 'de'
 }
 
-export function extractInvoiceNumber(text: string): string | undefined {
-  return extractFirstMatch(
-    text,
-    /Rechnung(?:s)?(?:nummer|-?\s?Nr\.?|\s+Nr\.?)\s*:?\s*([A-Za-z0-9][A-Za-z0-9\-/]*)/i,
-  )
-}
+/* --------------------------------------------------------- Rechnungsnummer */
 
-const DATE_PATTERN = /(\d{1,2}\.\s?\d{1,2}\.\s?\d{2,4})/
+const INVOICE_HEADING = /^(RECHNUNG|INVOICE)\b/i
+const INVOICE_NUMBER_SHAPE = /^[0-9][0-9A-Za-z\-/]{2,}$/
 
 /**
- * Liest das Rechnungsdatum aus dem Feld "vom:".
- *
- * Wichtig: Auf der Rechnung existieren mehrere "vom:"-Felder. Nur das Feld
- * direkt unter der Rechnungsnummer ist das Rechnungsdatum; Felder wie
- * "Ihr Auftrag vom:", "Lieferschein vom:" oder "Bestellung vom:" werden
- * ausgeschlossen.
+ * Liest die Rechnungsnummer aus dem fett gesetzten Text rechts neben der
+ * Überschrift "RECHNUNG" bzw. "INVOICE".
+ */
+export function extractInvoiceNumber(doc: DocumentText): string | undefined {
+  for (let i = 0; i < doc.lines.length; i++) {
+    const line = doc.lines[i]
+    const headingSegment = line.segments.find((s) => INVOICE_HEADING.test(s.text.trim()))
+    if (!headingSegment) continue
+
+    const candidate = findInvoiceNumberSegment(line, headingSegment.x)
+    if (candidate) return candidate
+
+    // Nummer kann auch eine Zeile darunter stehen (gleiche Spalte rechts).
+    for (const nextLine of doc.lines.slice(i + 1, i + 3)) {
+      const next = findInvoiceNumberSegment(nextLine, headingSegment.x - 5)
+      if (next) return next
+    }
+  }
+
+  // Rückfallebene: ausdrücklich beschriftetes Feld
+  const labelled = doc.text.match(
+    /(?:Rechnung(?:s)?(?:nummer|-?\s?Nr\.?)|Invoice\s*(?:no\.?|number))\s*:?\s*([A-Za-z0-9][A-Za-z0-9\-/]*)/i,
+  )
+  return labelled?.[1]?.trim()
+}
+
+function findInvoiceNumberSegment(line: TextLine, minX: number): string | undefined {
+  const candidates = line.segments
+    .filter((s) => s.x > minX)
+    .flatMap((s) => s.text.split(/\s+/).map((token) => ({ token: token.trim(), bold: s.bold })))
+    .filter((c) => c.token.length > 0)
+
+  // Bevorzugt fett gesetzte Kandidaten (laut Vorgabe steht die Nummer fett).
+  const bold = candidates.filter((c) => c.bold && INVOICE_NUMBER_SHAPE.test(c.token))
+  if (bold.length > 0) return bold[0].token
+
+  const any = candidates.filter((c) => INVOICE_NUMBER_SHAPE.test(c.token))
+  return any.length > 0 ? any[0].token : undefined
+}
+
+/* ---------------------------------------------------------- Rechnungsdatum */
+
+const DATE_PATTERN = /(\d{1,2}\.\s?\d{1,2}\.\s?\d{2,4})/
+const DATE_LABEL = /(?:\bvom\b|\bdated\b)\s*:?\s*/gi
+const WRONG_DATE_CONTEXT =
+  /(Auftrag|Bestellung|Lieferschein|Anfrage|Angebot|order|delivery\s*note|enquiry|quotation)/i
+
+/**
+ * Liest das Rechnungsdatum aus "vom:" (deutsch) bzw. "dated:" (englisch).
+ * Felder mit anderem Bezug – etwa "Ihr Auftrag vom:" oder "your order
+ * dated:" – werden ausgeschlossen.
  */
 export function extractInvoiceDate(text: string): string | undefined {
   const candidates: { index: number; value: string }[] = []
-  const regex = /vom\s*:?\s*/gi
 
-  for (const match of text.matchAll(regex)) {
+  for (const match of text.matchAll(DATE_LABEL)) {
     const index = match.index ?? 0
-
-    // Kontext vor dem Treffer prüfen: gehört das "vom:" zu einem anderen Bezug?
     const contextBefore = text.slice(Math.max(0, index - 40), index)
-    if (/(Auftrag|Bestellung|Lieferschein|Anfrage|Angebot|Order|Auftragsbest)/i.test(contextBefore)) {
-      continue
-    }
+    if (WRONG_DATE_CONTEXT.test(contextBefore)) continue
 
     const after = text.slice(index + match[0].length, index + match[0].length + 20)
     const dateMatch = after.match(DATE_PATTERN)
@@ -63,10 +126,10 @@ export function extractInvoiceDate(text: string): string | undefined {
 
   if (candidates.length === 0) return undefined
 
-  // Bevorzugt das "vom:" unmittelbar nach der Rechnungsnummer.
-  const invoiceNumberMatch = text.match(/Rechnung(?:s)?(?:nummer|-?\s?Nr\.?|\s+Nr\.?)/i)
-  if (invoiceNumberMatch?.index != null) {
-    const after = candidates.filter((c) => c.index > (invoiceNumberMatch.index ?? 0))
+  // Bevorzugt das Feld nach der Rechnungsnummer / Rechnungsüberschrift.
+  const anchor = text.search(/\b(RECHNUNG|INVOICE)\b|Rechnung(?:s)?(?:nummer|-?\s?Nr\.?)/i)
+  if (anchor > -1) {
+    const after = candidates.filter((c) => c.index > anchor)
     if (after.length > 0) return after[0].value
   }
 
@@ -85,42 +148,39 @@ export function deriveReferencePeriod(dateRaw: string | undefined): { month: str
   return { month, year }
 }
 
+/* ------------------------------------------------------------- Kopf-Felder */
+
 export function extractVatId(text: string): string | undefined {
-  const raw = extractFirstMatch(
-    text,
-    /Ihre\s+USt-?\s?IdNr\.?\s*:?\s*([A-Za-z]{2}[A-Za-z0-9 ]*[A-Za-z0-9])/i,
+  const raw = text.match(
+    /(?:Ihre\s+USt-?\s?IdNr\.?|Your\s+VAT\s*(?:-?\s?(?:ID|no\.?|number))?)\s*:?\s*([A-Za-z]{2}[A-Za-z0-9 ]*[A-Za-z0-9])/i,
   )
-  if (!raw) return undefined
-  return raw.replace(/\s+/g, '')
+  return raw?.[1]?.replace(/\s+/g, '')
 }
 
 /**
- * Liest das Netto-Gesamtgewicht aus der Fußzeile. Erwartet wird eine
- * Sternchen-Trennlinie, gefolgt von "Net weight:" bzw. "Netto:".
+ * Netto-Gesamtgewicht aus der Fußzeile hinter der Sternchen-Trennlinie
+ * ("Net weight:" bzw. "Netto:"). Ein Netto-Geldbetrag wird über die
+ * Einheitenprüfung ausgeschlossen.
  */
 export function extractNetWeightTotal(text: string): { value: number; raw: string } | undefined {
-  // 1. Bevorzugt: hinter der Sternchen-Trennlinie
   const afterStars = text.match(
-    /\*{5,}[\s\S]{0,80}?(?:Net\s*weight|Nettogewicht|Netto)\s*:?\s*([0-9][0-9.,]*)\s*(kg|EUR|€)?/i,
+    /\*{5,}[\s\S]{0,120}?(?:Net\s*weight|Nettogewicht|Netto)\s*:?\s*([0-9][0-9.,]*)\s*(kg|EUR|€)?/i,
   )
   if (afterStars && !/EUR|€/i.test(afterStars[2] ?? '')) {
     const value = parseGermanNumber(afterStars[1])
     if (value != null) return { value, raw: afterStars[1] }
   }
 
-  // 2. Ausdrücklich benanntes Netto-Gesamtgewicht
   const explicit = text.match(/Netto-?\s?Gesamtgewicht\s*:?\s*([0-9][0-9.,]*)\s*kg/i)
   if (explicit) {
     const value = parseGermanNumber(explicit[1])
     if (value != null) return { value, raw: explicit[1] }
   }
 
-  // 3. "Net weight:" / "Netto:" ohne Trennlinie – nur akzeptieren, wenn keine
-  //    Währungsangabe folgt (sonst wäre es ein Netto-Betrag, kein Gewicht).
-  const labelled = [...text.matchAll(/(?:Net\s*weight|Nettogewicht|Netto)\s*:?\s*([0-9][0-9.,]*)\s*(kg|EUR|€)?/gi)]
-  for (const match of labelled) {
-    const unit = match[2] ?? ''
-    if (/EUR|€/i.test(unit)) continue
+  for (const match of text.matchAll(
+    /(?:Net\s*weight|Nettogewicht|Netto)\s*:?\s*([0-9][0-9.,]*)\s*(kg|EUR|€)?/gi,
+  )) {
+    if (/EUR|€/i.test(match[2] ?? '')) continue
     const value = parseGermanNumber(match[1])
     if (value != null) return { value, raw: match[1] }
   }
@@ -129,44 +189,33 @@ export function extractNetWeightTotal(text: string): { value: number; raw: strin
 }
 
 export function extractGoodsValueTotal(text: string): number | undefined {
-  const raw = extractFirstMatch(
-    text,
-    /Warenwert(?:\s*gesamt|\s*insgesamt)?\s*:?\s*([0-9][0-9.,]*)\s*(?:EUR|€)?/i,
+  const raw = text.match(
+    /(?:Warenwert(?:\s*gesamt|\s*insgesamt)?|Goods\s*value|Total\s*value)\s*:?\s*([0-9][0-9.,]*)\s*(?:EUR|€)?/i,
   )
-  const value = parseGermanNumber(raw ?? null)
-  return value ?? undefined
+  return parseGermanNumber(raw?.[1] ?? null) ?? undefined
 }
 
 export function extractFreightCost(text: string): number | undefined {
-  const raw = extractFirstMatch(
-    text,
-    /(?:Frachtkosten|Fracht|Versandkosten|Freight)\s*:?\s*([0-9][0-9.,]*)\s*(?:EUR|€)?/i,
+  const raw = text.match(
+    /(?:Frachtkosten|Fracht|Versandkosten|Freight(?:\s*costs?)?|Carriage)\s*:?\s*([0-9][0-9.,]*)\s*(?:EUR|€)?/i,
   )
-  const value = parseGermanNumber(raw ?? null)
-  return value ?? undefined
+  return parseGermanNumber(raw?.[1] ?? null) ?? undefined
 }
 
 /* ------------------------------------------------------------------ Adressen */
 
 const FIELD_LABEL_PATTERN =
-  /^(Rechnung|Rechnungsnummer|Rechnungs-?Nr|Rechnungsdatum|vom\s*:|Ihr\s+Auftrag|Ihre\s+USt|Kundennummer|Kunden-?Nr|Seite|Pos\b|Position|Menge|Bezeichnung|Betrag|Zolltarif|Lieferadresse|Auftragsadresse|Liefer-?anschrift|Zahlungsbedingungen|Lieferbedingungen)/i
+  /^(RECHNUNG|INVOICE|Rechnungsnummer|Rechnungs-?Nr|Rechnungsdatum|vom\s*:|dated\s*:|Ihr\s+Auftrag|Your\s+order|Ihre\s+USt|Your\s+VAT|Kundennummer|Kunden-?Nr|Customer|Seite|Page|Pos\b|Position|Menge|Quantity|Bezeichnung|Description|Betrag|Amount|Dly\.?\s?date|Zolltarif|Customs|Lieferadresse|Auftragsadresse|Delivery\s+address|Zahlungsbedingungen|Lieferbedingungen|Terms)/i
 
-const DELIVERY_LABELS = /(Lieferadresse|Liefer-?\s?Adresse|Lieferanschrift|Delivery\s+address)/i
-const ORDER_LABELS = /(Auftragsadresse|Auftrags-?\s?Adresse|Bestelladresse|Auftraggeber)/i
+const DELIVERY_LABELS = /(Lieferadresse|Liefer-?\s?Adresse|Lieferanschrift|Delivery\s+address|Ship-?to)/i
+const ORDER_LABELS = /(Auftragsadresse|Auftrags-?\s?Adresse|Bestelladresse|Auftraggeber|Order(?:ing)?\s+address|Sold-?to)/i
 
-/**
- * Extrahiert den Adressblock hinter einer Beschriftung. Es werden maximal
- * `maxLines` Folgezeilen übernommen; die Übernahme endet an einer Leerzeile
- * oder an der nächsten bekannten Feldbeschriftung.
- */
 function extractLabelledBlock(text: string, labelPattern: RegExp, maxLines = 6): string | undefined {
   const lines = text.split(/\r?\n/)
   const labelIndex = lines.findIndex((line) => labelPattern.test(line))
   if (labelIndex === -1) return undefined
 
   const collected: string[] = []
-
-  // Steht hinter der Beschriftung in derselben Zeile bereits Text, mitnehmen.
   const sameLineRest = lines[labelIndex].replace(labelPattern, '').replace(/^[\s:–-]+/, '').trim()
   if (sameLineRest.length > 0) collected.push(sameLineRest)
 
@@ -177,8 +226,7 @@ function extractLabelledBlock(text: string, labelPattern: RegExp, maxLines = 6):
     collected.push(line)
   }
 
-  if (collected.length === 0) return undefined
-  return collected.join('\n')
+  return collected.length > 0 ? collected.join('\n') : undefined
 }
 
 export function extractDeliveryAddressBlock(text: string): string | undefined {
@@ -189,13 +237,9 @@ export function extractOrderAddressBlock(text: string): string | undefined {
   return extractLabelledBlock(text, ORDER_LABELS)
 }
 
-/**
- * Empfängeradresse im Briefkopf: der letzte zusammenhängende Absatz vor dem
- * ersten bekannten Rechnungsfeld. Dient nur als letzte Rückfallebene.
- */
 export function extractRecipientAddressBlock(text: string): string | undefined {
   const stopIndex = text.search(
-    /Rechnung(?:s)?(?:nummer|-?\s?Nr\.?)|Rechnungsdatum|Lieferadresse|Auftragsadresse|Ihre\s+USt-?\s?IdNr/i,
+    /\b(RECHNUNG|INVOICE)\b|Rechnung(?:s)?(?:nummer|-?\s?Nr\.?)|Rechnungsdatum|Lieferadresse|Auftragsadresse|Delivery\s+address|Ihre\s+USt-?\s?IdNr/i,
   )
   const header = stopIndex > -1 ? text.slice(0, stopIndex) : text.slice(0, 600)
 
@@ -204,10 +248,7 @@ export function extractRecipientAddressBlock(text: string): string | undefined {
     .map((p) => p.trim())
     .filter((p) => p.length > 0)
 
-  if (paragraphs.length === 0) return undefined
-  // Der eigene Briefkopf steht typischerweise zuerst, die Empfängeradresse
-  // als letzter Absatz davor.
-  return paragraphs[paragraphs.length - 1]
+  return paragraphs.length > 0 ? paragraphs[paragraphs.length - 1] : undefined
 }
 
 export function parseAddress(block: string | undefined, kind: AddressKind): Address | undefined {
@@ -221,23 +262,35 @@ export function parseAddress(block: string | undefined, kind: AddressKind): Addr
   }
 }
 
-/**
- * Bestimmt das Bestimmungsland gemäß Priorität:
- *  1. Lieferadresse
- *  2. Auftragsadresse
- *  3. Empfängeradresse im Briefkopf
- *
- * Ist im gewählten Adressblock kein Land eindeutig auflösbar, wird zusätzlich
- * eine dauerhaft gespeicherte manuelle Zuordnung für das gefundene Token
- * herangezogen. Erst danach gilt das Land als ungeklärt.
- */
+export type DestinationCountrySource =
+  | 'delivery'
+  | 'order'
+  | 'recipient'
+  | 'gelernte-zuordnung'
+  | 'gespeichertes-mapping'
+  | 'unresolved'
+
 export type DestinationCountryResult = {
   code: string | null
-  source: 'delivery' | 'order' | 'recipient' | 'gespeichertes-mapping' | 'unresolved'
+  source: DestinationCountrySource
   token: string | null
   usedAddress?: Address
+  /** true, wenn der Code nur ein Vorschlag ist und bestätigt werden muss. */
+  needsConfirmation: boolean
 }
 
+function lastLineOf(block: string): string | null {
+  const lines = block.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
+  return lines.length > 0 ? lines[lines.length - 1] : null
+}
+
+/**
+ * Bestimmt das Bestimmungsland: Lieferadresse vor Auftragsadresse vor
+ * Empfängeradresse. Kann das Kennzeichen nicht aufgelöst werden, greift eine
+ * dauerhaft gespeicherte Zuordnung. Bleibt es unklar, wird – sofern in einer
+ * der Adressen überhaupt ein Land erkennbar war – dieses als **Vorschlag**
+ * geliefert und zur Bestätigung markiert.
+ */
 export function determineDestinationCountry(
   deliveryAddress: Address | undefined,
   orderAddress: Address | undefined,
@@ -249,102 +302,231 @@ export function determineDestinationCountry(
     { address: recipient, source: 'recipient' },
   ]
 
-  const firstAvailable = candidates.find((c) => c.address)
+  const available = candidates.filter((c) => c.address)
 
-  for (const candidate of candidates) {
-    if (!candidate.address) continue
-    if (candidate.address.countryCode) {
+  // 1. Gelernte Zuordnung für genau diese Adresse hat Vorrang – so werden
+  //    zuvor manuell bestätigte Abweichungen künftig automatisch angewendet.
+  for (const candidate of available) {
+    const address = candidate.address!
+    const learned = lookupAddressCountryOverride(address.raw)
+    if (learned) {
       return {
-        code: candidate.address.countryCode,
-        source: candidate.source,
-        token: candidate.address.countryToken ?? null,
-        usedAddress: candidate.address,
+        code: learned,
+        source: 'gelernte-zuordnung',
+        token: address.countryToken ?? lastLineOf(address.raw),
+        usedAddress: address,
+        needsConfirmation: false,
       }
     }
-    // Kein automatisch auflösbares Land – gespeicherte Zuordnung prüfen.
-    const mapped = lookupCountryMapping(candidate.address.countryToken ?? lastLineOf(candidate.address.raw))
+  }
+
+  // 2. Die höchstpriorisierte vorhandene Adresse ist maßgeblich.
+  const primaryCandidate = available[0]
+  const primary = primaryCandidate?.address
+
+  if (primary) {
+    if (primary.countryCode) {
+      return {
+        code: primary.countryCode,
+        source: primaryCandidate.source,
+        token: primary.countryToken ?? null,
+        usedAddress: primary,
+        // Aus dem Briefkopf abgeleitete Länder gelten nur als Vorschlag.
+        needsConfirmation: primaryCandidate.source === 'recipient',
+      }
+    }
+
+    const mapped = lookupCountryMapping(primary.countryToken ?? lastLineOf(primary.raw))
     if (mapped) {
       return {
         code: mapped,
         source: 'gespeichertes-mapping',
-        token: candidate.address.countryToken ?? lastLineOf(candidate.address.raw),
-        usedAddress: candidate.address,
+        token: primary.countryToken ?? lastLineOf(primary.raw),
+        usedAddress: primary,
+        needsConfirmation: false,
       }
+    }
+  }
+
+  // 3. In der maßgeblichen Adresse ist kein Land erkennbar: Land einer
+  //    nachrangigen Adresse als Vorschlag anbieten (muss bestätigt werden).
+  const fallback = available.slice(1).find((c) => c.address?.countryCode)
+  if (fallback?.address?.countryCode) {
+    return {
+      code: fallback.address.countryCode,
+      source: fallback.source,
+      token: primary ? (primary.countryToken ?? lastLineOf(primary.raw)) : null,
+      usedAddress: primary ?? fallback.address,
+      needsConfirmation: true,
     }
   }
 
   return {
     code: null,
     source: 'unresolved',
-    token: firstAvailable?.address
-      ? (firstAvailable.address.countryToken ?? lastLineOf(firstAvailable.address.raw))
-      : null,
-    usedAddress: firstAvailable?.address,
+    token: primary ? (primary.countryToken ?? lastLineOf(primary.raw)) : null,
+    usedAddress: primary,
+    needsConfirmation: true,
   }
-}
-
-function lastLineOf(block: string): string | null {
-  const lines = block.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
-  return lines.length > 0 ? lines[lines.length - 1] : null
 }
 
 /* ---------------------------------------------------------------- Positionen */
 
-// Wichtig: innerhalb der Zahl NUR horizontale Trennzeichen erlauben. Ein `\s`
-// würde den Zeilenumbruch mitfassen und Ziffern der nächsten Position
-// anhängen (z. B. "39235000" + Positionsnummer "2" der Folgezeile).
-const CUSTOMS_CODE_LABEL = /Zolltarif-?[ \t]?Nr\.?\.?[ \t]*:?[ \t]*\n?[ \t]*([0-9][0-9. \t]{4,12})(?![0-9])/gi
-const QUANTITY_PATTERN = /([0-9][0-9.]*(?:,[0-9]+)?)\s*(?:Stück|Stueck|Stck\.?|Stk\.?|pcs)\b/i
-const MONEY_PATTERN = /([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2})/g
+const CUSTOMS_CODE_PATTERN =
+  /(?:Zolltarif-?[ \t]?Nr\.?\.?|Customs\s*tariff(?:\s*no\.?)?|Commodity\s*code|Tariff\s*no\.?|HS[- ]?code)[ \t]*:?[ \t]*\n?[ \t]*([0-9][0-9. \t]{4,12})(?![0-9])/i
+
+const QUANTITY_UNIT = /(St(?:ü|ue)ck|Stck\.?|Stk\.?|pcs\.?|pieces|pc\.?)/i
+const NUMBER_SHAPE = /^-?[0-9]{1,3}(?:\.[0-9]{3})*(?:,[0-9]+)?$|^-?[0-9]+(?:,[0-9]+)?$/
+const MONEY_SHAPE = /^-?[0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2}$|^-?[0-9]+,[0-9]{2}$/
+const DATE_SHAPE = /^\d{1,2}\.\d{1,2}\.\d{2,4}$/
+const FOOTER_MARKER = /\*{5,}/
+
+export type PositionColumns = {
+  quantityX?: number
+  descriptionX?: number
+  amountX?: number
+}
 
 /**
- * Zerlegt den Rechnungstext in Blöcke je Rechnungsposition, jeweils verankert
- * an einem Vorkommen des Feldes "Zolltarif-Nr.:" bzw. "Zolltarif-Nr..:".
+ * Ermittelt die x-Positionen der Tabellenspalten aus der Kopfzeile der
+ * Positionstabelle. Dadurch lässt sich der Positionsbetrag unabhängig von
+ * seiner Beschriftung finden – in englischen Rechnungen trägt diese Spalte
+ * laut Vorgabe die Bezeichnung "Dly.date".
  */
-export function extractPositions(text: string): InvoicePosition[] {
-  const anchors = [...text.matchAll(CUSTOMS_CODE_LABEL)]
+export function detectPositionColumns(doc: DocumentText): PositionColumns {
+  const columns: PositionColumns = {}
+
+  for (const line of doc.lines) {
+    const hasQuantity = /\b(Menge|Quantity)\b/i.test(line.text)
+    const hasAmount = /\b(Betrag|Amount|Dly\.?\s?date|Total|Wert|Value)\b/i.test(line.text)
+    if (!hasQuantity && !hasAmount) continue
+
+    for (const segment of line.segments) {
+      if (/\b(Menge|Quantity)\b/i.test(segment.text) && columns.quantityX == null) {
+        columns.quantityX = segment.x
+      }
+      if (/\b(Bezeichnung|Description|Artikel|Article)\b/i.test(segment.text) && columns.descriptionX == null) {
+        columns.descriptionX = segment.x
+      }
+      if (
+        /\b(Betrag|Amount|Dly\.?\s?date|Total|Wert|Value)\b/i.test(segment.text) &&
+        columns.amountX == null
+      ) {
+        columns.amountX = segment.x
+      }
+    }
+    if (columns.quantityX != null || columns.amountX != null) break
+  }
+
+  return columns
+}
+
+type PositionAnchor = { lineIndex: number; segment: TextSegment; number: number }
+
+/**
+ * Findet die Positionszeilen: linksbündige, fett gesetzte Ganzzahlen
+ * ("10", "20", …). Es werden nur aufsteigende Nummern in derselben Spalte
+ * akzeptiert, damit andere fette Zahlen nicht fehlinterpretiert werden.
+ */
+export function findPositionAnchors(doc: DocumentText): PositionAnchor[] {
+  const raw: PositionAnchor[] = []
+
+  for (let i = 0; i < doc.lines.length; i++) {
+    const line = doc.lines[i]
+    const first = line.segments[0]
+    if (!first || !isBoldInteger(first)) continue
+    raw.push({ lineIndex: i, segment: first, number: Number(first.text.trim()) })
+  }
+
+  if (raw.length === 0) return []
+
+  // Auf die linke Spalte beschränken
+  const minX = Math.min(...raw.map((a) => a.segment.x))
+  const inColumn = raw.filter((a) => a.segment.x <= minX + 8)
+
+  // Nur aufsteigende Positionsnummern behalten
+  const ascending: PositionAnchor[] = []
+  for (const anchor of inColumn) {
+    if (ascending.length === 0 || anchor.number > ascending[ascending.length - 1].number) {
+      ascending.push(anchor)
+    }
+  }
+
+  return ascending
+}
+
+function segmentTokens(line: TextLine): { token: string; bold: boolean; x: number; endX: number }[] {
+  return line.segments.flatMap((segment) => {
+    const parts = segment.text.split(/\s+/).filter(Boolean)
+    if (parts.length <= 1) {
+      return [{ token: segment.text.trim(), bold: segment.bold, x: segment.x, endX: segment.endX }]
+    }
+    const width = Math.max(segment.endX - segment.x, 1)
+    const totalChars = segment.text.length || 1
+    let cursor = 0
+    return parts.map((part) => {
+      const start = segment.text.indexOf(part, cursor)
+      cursor = start + part.length
+      return {
+        token: part,
+        bold: segment.bold,
+        x: segment.x + (start / totalChars) * width,
+        endX: segment.x + (cursor / totalChars) * width,
+      }
+    })
+  })
+}
+
+/**
+ * Zerlegt die Rechnung in Positionsblöcke und liest je Position
+ * Bezeichnung, Menge (fett), Warennummer und Betrag.
+ */
+export function extractPositions(doc: DocumentText, columns: PositionColumns = {}): InvoicePosition[] {
+  const anchors = findPositionAnchors(doc)
   if (anchors.length === 0) return []
+
+  const footerIndex = doc.lines.findIndex((line) => FOOTER_MARKER.test(line.text))
 
   const positions: InvoicePosition[] = []
 
   for (let i = 0; i < anchors.length; i++) {
     const anchor = anchors[i]
-    const anchorIndex = anchor.index ?? 0
+    const nextAnchorIndex = i + 1 < anchors.length ? anchors[i + 1].lineIndex : doc.lines.length
+    const limit = footerIndex > anchor.lineIndex ? Math.min(nextAnchorIndex, footerIndex) : nextAnchorIndex
+    const blockLines = doc.lines.slice(anchor.lineIndex, limit)
+    const blockText = blockLines.map((l) => l.text).join('\n')
 
-    // Der Positionsblock reicht vom Ende der vorherigen Position bis zum Ende
-    // dieser Position (Zolltarifnummer steht in der Regel unter dem Artikel).
-    const blockStart = i === 0 ? Math.max(0, anchorIndex - 400) : (anchors[i - 1].index ?? 0) + (anchors[i - 1][0]?.length ?? 0)
-    const blockEnd = anchorIndex + anchor[0].length
-    const block = text.slice(blockStart, blockEnd)
+    // --- Warennummer
+    const customsMatch = blockText.match(CUSTOMS_CODE_PATTERN)
+    const customsCodeRaw = customsMatch?.[1]?.trim()
+    const customsCode = customsCodeRaw?.replace(/\D/g, '')
 
-    const customsCodeRaw = anchor[1].trim()
-    const customsCode = customsCodeRaw.replace(/\D/g, '')
+    // --- Menge: ausschließlich fett gesetzte Zahlen
+    const quantity = extractQuantity(blockLines, anchor.segment)
 
-    const quantityMatch = block.match(QUANTITY_PATTERN)
-    const quantityRaw = quantityMatch?.[1]
-    const quantity = parseGermanNumber(quantityRaw ?? null) ?? undefined
+    // --- Bezeichnung: rechts von der Positionsnummer, über die Folgezeilen
+    const productNameRaw = extractDescription(blockLines, anchor, columns)
 
-    const productNameRaw = extractProductName(block, quantityMatch?.[0])
-
-    const amountInfo = extractPositionAmount(block, quantityMatch?.[0])
+    // --- Betrag
+    const amount = extractAmount(blockLines, anchor.segment, quantity?.segmentX, columns)
 
     const isSpecialUnit = customsCode === '39233010'
-
-    const negativeMarkers = /(Gutschrift|Storno(?:rechnung)?|Rabatt|Credit\s*note)/i
-    const negativeReasonMatch = block.match(negativeMarkers)
-    const isNegativeAmount = amountInfo?.value != null && amountInfo.value < 0
+    const negativeMarkers = /(Gutschrift|Storno(?:rechnung)?|Rabatt|Credit\s*note|discount)/i
+    const negativeReasonMatch = blockText.match(negativeMarkers)
+    const isNegativeAmount = amount?.value != null && amount.value < 0
     const isCreditOrDiscountOrNegative = isNegativeAmount || !!negativeReasonMatch
 
     positions.push({
-      id: `pos-${i + 1}-${customsCode || 'ohne'}`,
+      id: `pos-${i + 1}-${anchor.number}`,
       lineNo: i + 1,
+      positionNumber: anchor.segment.text.trim(),
       productNameRaw,
       customsCodeRaw,
       customsCode,
-      quantityRaw,
-      quantity,
-      amountRaw: amountInfo?.raw,
-      amountEur: amountInfo?.value,
+      quantityRaw: quantity?.raw,
+      quantity: quantity?.value,
+      amountRaw: amount?.raw,
+      amountEur: amount?.value,
       isSpecialUnit,
       isCreditOrDiscountOrNegative,
       negativeReason: negativeReasonMatch?.[1],
@@ -358,111 +540,150 @@ export function extractPositions(text: string): InvoicePosition[] {
   return positions
 }
 
-/**
- * Ermittelt die Produktbezeichnung innerhalb eines Positionsblocks.
- * Reihenfolge: ausdrückliche Beschriftung → Zeile mit/nach der Mengenangabe →
- * längste verbleibende Textzeile.
- */
-function extractProductName(block: string, quantityText: string | undefined): string {
-  const labelled = block.match(/Produkt(?:bezeichnung)?\s*:?\s*(.+)/i)
-  if (labelled?.[1]) return labelled[1].trim()
+function extractQuantity(
+  blockLines: TextLine[],
+  positionSegment: TextSegment,
+): { value: number; raw: string; segmentX: number } | undefined {
+  const boldNumbers: { token: string; x: number }[] = []
 
-  const lines = block
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0)
+  for (const line of blockLines) {
+    const tokens = segmentTokens(line)
+    for (let i = 0; i < tokens.length; i++) {
+      const t = tokens[i]
+      if (!t.bold) continue
+      if (t.x === positionSegment.x && t.token === positionSegment.text.trim()) continue
+      if (DATE_SHAPE.test(t.token)) continue
+      if (!NUMBER_SHAPE.test(t.token)) continue
 
-  const isCandidate = (line: string) =>
-    !FIELD_LABEL_PATTERN.test(line) &&
-    !/^\*+$/.test(line) &&
-    // rein numerische Zeilen (Mengen, Beträge, Nummern) ausschließen
-    !/^[0-9.,%\s€-]+$/.test(line) &&
-    !/Zolltarif/i.test(line) &&
-    line.length > 2
-
-  if (quantityText) {
-    const quantityLineIndex = lines.findIndex((line) => line.includes(quantityText.trim()))
-    if (quantityLineIndex > -1) {
-      // Reststück derselben Zeile hinter der Menge (z. B. "500,00 Stück  Sprayer K2 rot")
-      const rest = lines[quantityLineIndex].split(quantityText.trim()).pop()?.trim() ?? ''
-      if (rest.length > 2 && isCandidate(rest)) return rest
-
-      // sonst die folgende Zeile
-      for (let i = quantityLineIndex + 1; i < lines.length; i++) {
-        if (isCandidate(lines[i])) return lines[i]
+      // Mit unmittelbar folgender Mengeneinheit hat Vorrang
+      const following = tokens.slice(i + 1, i + 3).map((n) => n.token).join(' ')
+      if (QUANTITY_UNIT.test(following) || QUANTITY_UNIT.test(t.token)) {
+        const value = parseGermanNumber(t.token)
+        if (value != null) return { value, raw: t.token, segmentX: t.x }
       }
+      boldNumbers.push({ token: t.token, x: t.x })
     }
   }
 
-  const candidates = lines.filter(isCandidate)
-  if (candidates.length === 0) return ''
-  return candidates.reduce((longest, line) => (line.length > longest.length ? line : longest), '')
-}
-
-/**
- * Liest den Positionsbetrag. Bevorzugt eine ausdrücklich beschriftete Angabe,
- * ansonsten den letzten Geldbetrag im Block (in tabellarischen Rechnungen
- * steht der Positionsbetrag rechts, also am Zeilenende).
- */
-function extractPositionAmount(
-  block: string,
-  quantityText: string | undefined,
-): { raw: string; value: number } | undefined {
-  const labelled = block.match(/Betrag\s*:?\s*(-?[0-9][0-9.]*,[0-9]{2})/i)
-  if (labelled) {
-    const value = parseGermanNumber(labelled[1])
-    if (value != null) return { raw: labelled[1], value }
+  for (const candidate of boldNumbers) {
+    const value = parseGermanNumber(candidate.token)
+    if (value != null) return { value, raw: candidate.token, segmentX: candidate.x }
   }
 
-  const withoutQuantity = quantityText ? block.split(quantityText).join(' ') : block
-  const matches = [...withoutQuantity.matchAll(MONEY_PATTERN)].map((m) => m[1])
-  if (matches.length === 0) return undefined
+  return undefined
+}
 
-  const raw = matches[matches.length - 1]
-  const value = parseGermanNumber(raw)
-  if (value == null) return undefined
-  return { raw, value }
+function extractDescription(
+  blockLines: TextLine[],
+  anchor: PositionAnchor,
+  columns: PositionColumns,
+): string {
+  const leftBoundary = anchor.segment.endX
+
+  // Rechte Grenze der Bezeichnungsspalte: die nächste Zahlenspalte rechts.
+  const columnEdges = [columns.quantityX, columns.amountX]
+    .filter((x): x is number => x != null && x > leftBoundary)
+    .sort((a, b) => a - b)
+  const rightBoundary = columnEdges[0] ?? Number.POSITIVE_INFINITY
+
+  const parts: string[] = []
+
+  // Erste Zeile: alles rechts von der Positionsnummer
+  const firstLineText = textRightOf(blockLines[0], anchor.segment.x)
+  if (firstLineText) parts.push(firstLineText)
+
+  // Folgezeilen: nur Textfragmente der Bezeichnungsspalte
+  for (const line of blockLines.slice(1)) {
+    const text = line.segments
+      .filter((s) => s.x >= leftBoundary - 4 && s.x < rightBoundary)
+      // Mengen sind fett gesetzt und gehören nicht zur Bezeichnung
+      .filter((s) => !s.bold)
+      .filter((s) => {
+        const value = s.text.trim()
+        if (NUMBER_SHAPE.test(value) || MONEY_SHAPE.test(value)) return false
+        if (new RegExp(`^[0-9][0-9.,]*\\s*${QUANTITY_UNIT.source}$`, 'i').test(value)) return false
+        return !FIELD_LABEL_PATTERN.test(value)
+      })
+      .map((s) => s.text)
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (text.length > 1) parts.push(text)
+  }
+
+  return parts.join(' ').replace(/\s+/g, ' ').trim()
+}
+
+function extractAmount(
+  blockLines: TextLine[],
+  positionSegment: TextSegment,
+  quantityX: number | undefined,
+  columns: PositionColumns,
+): { value: number; raw: string } | undefined {
+  const candidates: { token: string; x: number }[] = []
+
+  for (const line of blockLines) {
+    for (const t of segmentTokens(line)) {
+      const token = t.token
+      if (DATE_SHAPE.test(token)) continue
+      if (!MONEY_SHAPE.test(token)) continue
+      if (t.x === positionSegment.x) continue
+      if (quantityX != null && Math.abs(t.x - quantityX) < 1) continue
+      candidates.push({ token, x: t.x })
+    }
+  }
+
+  if (candidates.length === 0) return undefined
+
+  // Mit bekannter Betragsspalte: den nächstgelegenen Wert nehmen.
+  if (columns.amountX != null) {
+    const nearest = candidates.reduce((best, current) =>
+      Math.abs(current.x - columns.amountX!) < Math.abs(best.x - columns.amountX!) ? current : best,
+    )
+    const value = parseGermanNumber(nearest.token)
+    if (value != null) return { value, raw: nearest.token }
+  }
+
+  // Sonst: der am weitesten rechts stehende Betrag (Betragsspalte steht rechts).
+  const rightmost = candidates.reduce((best, current) => (current.x > best.x ? current : best))
+  const value = parseGermanNumber(rightmost.token)
+  return value != null ? { value, raw: rightmost.token } : undefined
 }
 
 /* ------------------------------------------------------------ Gesamtergebnis */
 
-export type ParsedInvoiceFields = Pick<
-  Invoice,
-  | 'invoiceNumber'
-  | 'invoiceDateRaw'
-  | 'referenceMonth'
-  | 'referenceYear'
-  | 'vatIdRaw'
-  | 'vatId'
-  | 'netWeightTotalRaw'
-  | 'netWeightTotal'
-  | 'goodsValueTotalRaw'
-  | 'goodsValueTotal'
-  | 'freightCostRaw'
-  | 'freightCost'
-  | 'recipient'
-  | 'orderAddress'
-  | 'deliveryAddress'
-  | 'positions'
->
+export type ParsedInvoiceFields = {
+  language: InvoiceLanguage
+  invoiceNumber?: string
+  invoiceDateRaw?: string
+  referenceMonth?: string
+  referenceYear?: string
+  vatIdRaw?: string
+  vatId?: string
+  netWeightTotalRaw?: string
+  netWeightTotal?: number
+  goodsValueTotalRaw?: string
+  goodsValueTotal?: number
+  freightCostRaw?: string
+  freightCost?: number
+  recipient?: Address
+  orderAddress?: Address
+  deliveryAddress?: Address
+  positions: InvoicePosition[]
+}
 
-export function parseInvoiceText(text: string): ParsedInvoiceFields {
+export function parseInvoiceDocument(doc: DocumentText): ParsedInvoiceFields {
+  const text = doc.text
+  const language = detectLanguage(text)
   const invoiceDateRaw = extractInvoiceDate(text)
   const period = deriveReferencePeriod(invoiceDateRaw)
   const netWeight = extractNetWeightTotal(text)
   const vatId = extractVatId(text)
-
-  const goodsValueTotalRaw = extractFirstMatch(
-    text,
-    /Warenwert(?:\s*gesamt|\s*insgesamt)?\s*:?\s*([0-9][0-9.,]*)\s*(?:EUR|€)?/i,
-  )
-  const freightCostRaw = extractFirstMatch(
-    text,
-    /(?:Frachtkosten|Fracht|Versandkosten|Freight)\s*:?\s*([0-9][0-9.,]*)\s*(?:EUR|€)?/i,
-  )
+  const columns = detectPositionColumns(doc)
 
   return {
-    invoiceNumber: extractInvoiceNumber(text),
+    language,
+    invoiceNumber: extractInvoiceNumber(doc),
     invoiceDateRaw,
     referenceMonth: period?.month,
     referenceYear: period?.year,
@@ -470,13 +691,11 @@ export function parseInvoiceText(text: string): ParsedInvoiceFields {
     vatId,
     netWeightTotalRaw: netWeight?.raw,
     netWeightTotal: netWeight?.value,
-    goodsValueTotalRaw,
     goodsValueTotal: extractGoodsValueTotal(text),
-    freightCostRaw,
     freightCost: extractFreightCost(text),
     recipient: parseAddress(extractRecipientAddressBlock(text), 'recipient'),
     orderAddress: parseAddress(extractOrderAddressBlock(text), 'order'),
     deliveryAddress: parseAddress(extractDeliveryAddressBlock(text), 'delivery'),
-    positions: extractPositions(text),
+    positions: extractPositions(doc, columns),
   }
 }
