@@ -99,6 +99,37 @@ export function validateInvoice(
     issues.push(makeIssue('positions', 'error', 'Es wurden keine Rechnungspositionen erkannt.'))
   }
 
+  if (invoice.ai?.status === 'fehler') {
+    issues.push(
+      makeIssue(
+        'ai',
+        'warning',
+        `Die KI-Zweitmeinung ist fehlgeschlagen: ${invoice.ai.error ?? 'unbekannter Fehler'}. Die regelbasierte Erkennung gilt unverändert.`,
+      ),
+    )
+  }
+
+  for (const discrepancy of invoice.ai?.discrepancies ?? []) {
+    if (discrepancy.resolved) continue
+    issues.push(
+      makeIssue(
+        `ai:${discrepancy.id}`,
+        'error',
+        `Abweichung zur KI-Zweitmeinung bei „${discrepancy.label}“: erkannt „${discrepancy.ownValue}“, KI liest „${discrepancy.aiValue}“. Bitte entscheiden.`,
+      ),
+    )
+  }
+
+  for (const field of invoice.ai?.uncertainFields ?? []) {
+    issues.push(
+      makeIssue(
+        `ai-uncertain:${field}`,
+        'warning',
+        `Die KI hat das Feld „${field}“ als unsicher gemeldet – bitte besonders prüfen.`,
+      ),
+    )
+  }
+
   const updatedPositions = invoice.positions.map((position) => validatePosition(position))
 
   const relevantPositions = updatedPositions.filter((p) => !p.isCreditOrDiscountOrNegative)

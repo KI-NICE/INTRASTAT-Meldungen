@@ -473,3 +473,95 @@ input:not([type]) {
     grid-template-columns: 1fr;
   }
 }
+
+/* ------------------------------------------------------ KI-Zweitmeinung */
+
+.ai-toggle {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 12px;
+  border-left: 2px solid #c7d2fe;
+  max-width: 460px;
+}
+
+.ai-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+}
+
+.ai-panel {
+  margin: 12px 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid #c7d2fe;
+  background: #eef2ff;
+  font-size: 0.85rem;
+}
+
+.ai-panel--ok {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+
+.ai-panel--open {
+  border-color: #fde68a;
+  background: #fffbeb;
+}
+
+.ai-panel--error {
+  border-color: #fecaca;
+  background: #fef2f2;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ai-panel__head {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.ai-diff {
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+  padding: 8px 0 6px;
+}
+
+.ai-diff__label {
+  font-weight: 600;
+}
+
+.ai-diff__values {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+  margin: 2px 0 6px;
+}
+
+.ai-diff__actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.ai-diff__actions button {
+  font-size: 0.78rem;
+  padding: 3px 9px;
+}
+
+.confirm-suggestion {
+  margin-top: 4px;
+  font-size: 0.78rem;
+  padding: 3px 9px;
+  align-self: flex-start;
+}

@@ -23,3 +23,6 @@ e2e/downloads
 *.njsproj
 *.sln
 *.sw?
+
+# Zugangsdaten
+.env

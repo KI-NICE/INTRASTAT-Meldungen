@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { Invoice, InvoicePosition, ProductWeightEntry } from '../types'
 import { listKnownCountries } from '../lib/countryCodes'
+import { canApplyAiValue } from '../lib/aiApply'
 import { formatGermanNumber } from '../lib/germanNumber'
 
 type ReviewTableProps = {
@@ -11,6 +12,7 @@ type ReviewTableProps = {
   onConfirmProductMapping: (invoiceId: string, positionId: string, entry: ProductWeightEntry) => void
   onConfirmCountry: (invoiceId: string, isoCode: string) => void
   onNegativeDecision: (invoiceId: string, positionId: string, include: boolean) => void
+  onResolveDiscrepancy: (invoiceId: string, discrepancyId: string, resolution: 'own' | 'ai') => void
 }
 
 const KNOWN_COUNTRIES = listKnownCountries()
@@ -44,6 +46,7 @@ export function ReviewTable({
   onConfirmProductMapping,
   onConfirmCountry,
   onNegativeDecision,
+  onResolveDiscrepancy,
 }: ReviewTableProps) {
   if (invoices.length === 0) {
     return <p>Es wurden noch keine Rechnungen analysiert.</p>
@@ -61,6 +64,7 @@ export function ReviewTable({
           onConfirmProductMapping={onConfirmProductMapping}
           onConfirmCountry={onConfirmCountry}
           onNegativeDecision={onNegativeDecision}
+          onResolveDiscrepancy={onResolveDiscrepancy}
         />
       ))}
     </div>
@@ -75,6 +79,7 @@ function InvoiceCard({
   onConfirmProductMapping,
   onConfirmCountry,
   onNegativeDecision,
+  onResolveDiscrepancy,
 }: { invoice: Invoice } & Omit<ReviewTableProps, 'invoices'>) {
   const [showRawText, setShowRawText] = useState(false)
 
@@ -227,6 +232,8 @@ function InvoiceCard({
           ))}
         </ul>
       )}
+
+      {invoice.ai && <AiPanel invoice={invoice} onResolveDiscrepancy={onResolveDiscrepancy} />}
 
       <div className="review-table-wrapper">
         <table className="review-table">
@@ -470,6 +477,93 @@ function ProductMappingCell({
           </option>
         ))}
       </select>
+    </div>
+  )
+}
+
+function AiPanel({
+  invoice,
+  onResolveDiscrepancy,
+}: {
+  invoice: Invoice
+  onResolveDiscrepancy: ReviewTableProps['onResolveDiscrepancy']
+}) {
+  const ai = invoice.ai
+  if (!ai) return null
+
+  if (ai.status === 'fehler') {
+    return (
+      <div className="ai-panel ai-panel--error">
+        <strong>KI-Zweitmeinung fehlgeschlagen.</strong> {ai.error}
+        <span className="hint">Die regelbasierte Erkennung gilt unverandert weiter.</span>
+      </div>
+    )
+  }
+
+  if (ai.status !== 'fertig') {
+    return <div className="ai-panel">KI-Zweitmeinung laeuft...</div>
+  }
+
+  const open = ai.discrepancies.filter((d) => !d.resolved)
+  const resolved = ai.discrepancies.filter((d) => d.resolved)
+
+  return (
+    <div className={`ai-panel ${open.length > 0 ? 'ai-panel--open' : 'ai-panel--ok'}`}>
+      <div className="ai-panel__head">
+        <strong>KI-Zweitmeinung</strong>
+        <span className="hint">
+          {ai.model ? `Modell: ${ai.model} - ` : ''}
+          {open.length === 0
+            ? ai.discrepancies.length === 0
+              ? 'keine Abweichungen'
+              : 'alle Abweichungen entschieden'
+            : `${open.length} offene Abweichung(en)`}
+        </span>
+      </div>
+
+      {ai.uncertainFields.length > 0 && (
+        <p className="hint hint--error">Von der KI als unsicher gemeldet: {ai.uncertainFields.join(', ')}</p>
+      )}
+
+      {open.map((d) => (
+        <div key={d.id} className="ai-diff">
+          <div className="ai-diff__label">{d.label}</div>
+          <div className="ai-diff__values">
+            <span>
+              erkannt: <strong>{d.ownValue}</strong>
+            </span>
+            <span>
+              KI liest: <strong>{d.aiValue}</strong>
+            </span>
+          </div>
+          <div className="ai-diff__actions">
+            <button type="button" onClick={() => onResolveDiscrepancy(invoice.id, d.id, 'own')}>
+              Eigenen Wert behalten
+            </button>
+            {canApplyAiValue(d.field) && (
+              <button type="button" onClick={() => onResolveDiscrepancy(invoice.id, d.id, 'ai')}>
+                KI-Wert uebernehmen
+              </button>
+            )}
+          </div>
+        </div>
+      ))}
+
+      {resolved.length > 0 && (
+        <details>
+          <summary>{resolved.length} entschiedene Abweichung(en)</summary>
+          <ul className="issue-list">
+            {resolved.map((d) => (
+              <li key={d.id} className="hint">
+                {d.label}:{' '}
+                {d.resolution === 'ai'
+                  ? `KI-Wert uebernommen (${d.aiValue})`
+                  : `eigener Wert behalten (${d.ownValue})`}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
     </div>
   )
 }

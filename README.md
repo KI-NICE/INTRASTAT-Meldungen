@@ -101,6 +101,54 @@ zusätzlich allgemein gemerkt.
 Alle gelernten Zuordnungen liegen im `localStorage` des Browsers und lassen
 sich unter „Erweitert“ jederzeit löschen.
 
+## KI-Zweitmeinung (optional, standardmäßig aus)
+
+Zusätzlich zur regelbasierten Erkennung kann Claude jede Rechnung unabhängig
+auslesen. Abweichungen werden in der Prüfansicht gegenübergestellt und müssen
+entschieden werden – **die regelbasierte Erkennung bleibt maßgeblich, ein
+KI-Wert wird niemals automatisch übernommen.** Solange eine Abweichung offen
+ist, ist der Export gesperrt.
+
+### Datenschutz-Hinweis
+
+Bei aktivierter KI-Prüfung werden **vollständige Rechnungs-PDFs an die
+Anthropic-API übertragen**. Das weicht bewusst von der ursprünglichen Vorgabe
+„keine Übertragung an KI-Dienste“ ab. Die Funktion ist deshalb
+standardmäßig **aus** und muss in der App ausdrücklich eingeschaltet werden.
+Ohne Aktivierung verlässt keine Rechnung den Rechner.
+
+### Einrichtung
+
+Der API-Key darf nicht in die Web-App gelangen – im Browser-Bundle wäre er für
+jeden lesbar. Deshalb läuft ein schlanker lokaler Proxy (`server/index.mjs`),
+der den Key aus der `.env` liest und zugleich die gebaute App ausliefert.
+
+```bash
+cp .env.example .env      # ANTHROPIC_API_KEY eintragen
+npm start                 # baut die App und startet den Proxy
+# danach http://localhost:8787 öffnen
+```
+
+Ohne Key startet der Server ebenfalls – die App läuft dann ohne KI-Prüfung.
+Im Entwicklungsmodus (`npm run dev` auf Port 5173) den Proxy separat mit
+`npm run server` starten und `VITE_AI_PROXY_URL=http://localhost:8787` setzen.
+
+Das Modell wird automatisch bestimmt (neuestes verfügbares Sonnet-Modell des
+Kontos) und lässt sich über `ANTHROPIC_MODEL` in der `.env` festlegen.
+
+### Was geprüft wird
+
+Rechnungsnummer, Rechnungsdatum, USt-IdNr., Bestimmungsland,
+Netto-Gesamtgewicht, Frachtkosten sowie je Position Warennummer, Menge,
+Positionsbetrag, Produktbezeichnung, das Gewicht aus der Produktbeschreibung
+und ein Verdacht auf Gutschrift/Rabatt. Meldet die KI selbst Unsicherheit zu
+einem Feld, erscheint das als Warnung. Reine Schreibweisen-Unterschiede bei
+Produktbezeichnungen und Rundungsdifferenzen unter einem Cent gelten nicht als
+Abweichung.
+
+Auf GitHub Pages ist die KI-Prüfung nicht verfügbar (dort läuft kein Proxy);
+alle übrigen Funktionen arbeiten dort wie gewohnt.
+
 ## Installation und Entwicklung
 
 Voraussetzung: Node.js ≥ 20.
@@ -111,6 +159,8 @@ npm run dev      # Entwicklungsserver
 npm run build    # Produktions-Build nach dist/
 npm run preview  # Vorschau des Builds
 npm test         # automatisierte Tests
+npm run server   # lokaler Proxy für die KI-Zweitmeinung (liefert auch dist/ aus)
+npm start        # build + Proxy in einem Schritt
 ```
 
 ### Betrieb ohne Node.js
@@ -127,7 +177,7 @@ Unter Windows genügt PowerShell mit Bordmitteln – siehe `tools/serve.ps1`.
 
 ### Tests
 
-Die Testsuite (Vitest, 83 Tests) prüft unter anderem:
+Die Testsuite (Vitest, 101 Tests) prüft unter anderem:
 
 - deutsche Zahlenformate und die Rundungsregeln für Gewicht und EUR,
 - Übersetzung der Länderkennzeichen, Adress-Priorität, Vorschlagslogik und das
@@ -139,7 +189,8 @@ Die Testsuite (Vitest, 83 Tests) prüft unter anderem:
 - Erkennung von `vom:`/`dated:` gegenüber `Ihr Auftrag vom:`/`your order dated:`,
 - Netto-Gesamtgewicht aus der Fußzeile (inkl. Abgrenzung zum Netto-Betrag),
 - Gewichtssummen-Prüfung mit Toleranz 0 kg,
-- Struktur, Zelltypen und Spalte M der exportierten Excel-Datei.
+- Struktur, Zelltypen und Spalte M der exportierten Excel-Datei,
+- Vergleich mit der KI-Zweitmeinung und die Übernahme einzelner KI-Werte.
 
 Unter `e2e/` liegt zusätzlich ein optionales End-to-End-Skript, das den
 gesamten Ablauf mit synthetischen Testdaten durchspielt und eine echte
@@ -151,6 +202,15 @@ npm install -D playwright pdf-lib
 node e2e/generate-sample-invoice.mjs   # erzeugt eine deutsche und eine englische Beispielrechnung
 npm run build && npm run preview      # in einem zweiten Terminal
 node e2e/run.mjs
+```
+
+Der Ablauf mit KI-Zweitmeinung lässt sich ohne echten API-Key und ohne
+Datenübertragung testen – `e2e/mock-anthropic.mjs` bildet die API nach:
+
+```bash
+node e2e/mock-anthropic.mjs &
+ANTHROPIC_API_KEY=test ANTHROPIC_BASE_URL=http://127.0.0.1:8788 npm run server &
+E2E_AI=1 APP_URL=http://127.0.0.1:8787/ node e2e/run.mjs
 ```
 
 ## Deployment auf GitHub Pages
@@ -169,8 +229,11 @@ Anpassung an den Repository-Namen ist nicht nötig.
 ## Datenschutz
 
 - Alle Verarbeitungsschritte laufen im Browser (JavaScript/WebAssembly).
-- Keine Übertragung von Rechnungs-, Gewichts- oder Excel-Daten an externe
-  Server, Analyse- oder KI-Dienste.
+- Ohne die optionale KI-Zweitmeinung findet **keine** Übertragung von
+  Rechnungs-, Gewichts- oder Excel-Daten an externe Server statt.
+- Ist die KI-Zweitmeinung eingeschaltet, werden vollständige Rechnungs-PDFs an
+  die Anthropic-API übertragen (siehe eigener Abschnitt oben). Der API-Key
+  bleibt dabei ausschließlich auf dem lokalen Proxy.
 - Dauerhaft gespeichert werden ausschließlich bestätigte Produkt- und
   Länder-Zuordnungen im `localStorage`. Rechnungsdaten selbst werden nicht
   dauerhaft gespeichert und gehen beim Neuladen der Seite verloren.
@@ -219,7 +282,9 @@ src/
   types.ts                interne Datentypen (nie im Export sichtbar)
 public/standard_fonts     pdf.js-Schriftdaten (für die Fettdruck-Erkennung)
 public/cmaps              pdf.js-Zeichentabellen
+server/index.mjs          lokaler Proxy für die KI-Zweitmeinung (Key bleibt serverseitig)
 tools/serve.ps1           lokaler Webserver für Windows ohne Node.js
-e2e/                      optionales End-to-End-Skript
+e2e/                      optionales End-to-End-Skript inkl. API-Nachbildung
+.env.example              Vorlage für den API-Key (die .env wird nicht eingecheckt)
 .github/workflows/        GitHub Pages Deployment
 ```

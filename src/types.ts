@@ -154,6 +154,53 @@ export type Invoice = {
   manualCorrections: ManualCorrection[]
   issues: ValidationIssue[]
   status: InvoiceStatus
+
+  /** Ergebnis der optionalen KI-Zweitmeinung. */
+  ai?: AiVerification
 }
 
 export type ManualProductMapping = Record<string, ProductWeightEntry>
+
+/* ------------------------------------------------ KI-Zweitmeinung (optional) */
+
+/** Von der KI gelesene Felder – dienen ausschließlich dem Gegenlesen. */
+export type AiInvoiceFields = {
+  language?: 'de' | 'en' | null
+  invoiceNumber?: string | null
+  invoiceDate?: string | null
+  vatId?: string | null
+  destinationCountryCode?: string | null
+  destinationAddressUsed?: string | null
+  netWeightTotalKg?: number | null
+  freightCostEur?: number | null
+  positions?: {
+    positionNumber?: string | null
+    productDescription?: string | null
+    customsCode?: string | null
+    quantity?: number | null
+    amountEur?: number | null
+    weightPerPieceGrams?: number | null
+    isCreditOrDiscount?: boolean | null
+  }[]
+  uncertainFields?: string[]
+}
+
+export type AiDiscrepancy = {
+  id: string
+  /** Technisches Feld, z. B. "vatId" oder "position:<id>:quantity". */
+  field: string
+  label: string
+  ownValue: string
+  aiValue: string
+  resolved: boolean
+  resolution?: 'own' | 'ai'
+}
+
+export type AiVerification = {
+  status: 'ausstehend' | 'laeuft' | 'fertig' | 'fehler'
+  model?: string
+  fields?: AiInvoiceFields
+  discrepancies: AiDiscrepancy[]
+  uncertainFields: string[]
+  error?: string
+}

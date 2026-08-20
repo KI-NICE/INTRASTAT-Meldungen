@@ -6,6 +6,9 @@ import { ReviewTable } from './components/ReviewTable'
 import { PreviewTable } from './components/PreviewTable'
 import { ExportSummaryView } from './components/ExportSummaryView'
 import type { Invoice, InvoicePosition, ProductWeightEntry } from './types'
+import { checkAiAvailability, verifyInvoiceWithAi, type AiAvailability } from './lib/aiVerification'
+import { compareWithAi, aiUncertaintyNotes } from './lib/aiCompare'
+import { applyAiValue } from './lib/aiApply'
 import { GEWICHTSLISTE } from './data/gewichtsliste'
 import { parseWeightListDocx } from './lib/weightList'
 import { loadBundledTemplate, createExportBuffer, buildExportFileName } from './lib/excelTemplate'
@@ -45,6 +48,14 @@ function App() {
 
   const [sessionMappings, setSessionMappings] = useState<Record<string, ProductWeightEntry>>({})
 
+  // KI-Zweitmeinung: standardmäßig AUS. Erst nach ausdrücklicher Aktivierung
+  // werden Rechnungs-PDFs an die Anthropic-API übertragen.
+  const [aiAvailability, setAiAvailability] = useState<AiAvailability>({ available: false, model: null })
+  const [aiEnabled, setAiEnabled] = useState(false)
+  const [aiRunning, setAiRunning] = useState(false)
+  const [aiProgress, setAiProgress] = useState<{ done: number; total: number; current: string } | null>(null)
+  const [filesByInvoiceId, setFilesByInvoiceId] = useState<Record<string, File>>({})
+
   // Hinterlegte Mustertabelle beim Start prüfen, damit ein Problem früh sichtbar wird.
   useEffect(() => {
     let cancelled = false
@@ -59,6 +70,17 @@ function App() {
         setTemplateStatus('fehler')
         setTemplateError(err instanceof Error ? err.message : 'Unbekannter Fehler')
       })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // Verfügbarkeit des lokalen KI-Proxys prüfen (überträgt keine Daten).
+  useEffect(() => {
+    let cancelled = false
+    checkAiAvailability().then((result) => {
+      if (!cancelled) setAiAvailability(result)
+    })
     return () => {
       cancelled = true
     }
@@ -93,15 +115,101 @@ function App() {
   async function handleAnalyze() {
     setAnalyzing(true)
     const results: Invoice[] = []
+    const fileMap: Record<string, File> = {}
     for (const file of invoiceFiles) {
       setAnalyzeProgress({ done: results.length, total: invoiceFiles.length, current: file.name })
       const invoice = await processInvoiceFile(file, weightList, selectedMonth, selectedYear, sessionMappings)
       results.push(invoice)
+      fileMap[invoice.id] = file
     }
     setAnalyzeProgress({ done: results.length, total: invoiceFiles.length, current: '' })
+    setFilesByInvoiceId(fileMap)
     setInvoices(results)
     setAnalyzing(false)
     setStep(4)
+
+    if (aiEnabled && aiAvailability.available) {
+      await runAiVerification(results, fileMap)
+    }
+  }
+
+  /**
+   * Holt die KI-Zweitmeinung ein. Überträgt die vollständigen Rechnungs-PDFs
+   * an den lokalen Proxy und von dort an die Anthropic-API.
+   */
+  async function runAiVerification(targets: Invoice[], fileMap: Record<string, File>) {
+    setAiRunning(true)
+    try {
+      for (let i = 0; i < targets.length; i++) {
+        const invoice = targets[i]
+        const file = fileMap[invoice.id]
+        setAiProgress({ done: i, total: targets.length, current: invoice.fileName })
+        if (!file) continue
+
+        try {
+          const { model, fields } = await verifyInvoiceWithAi(file)
+          setInvoices((prev) =>
+            prev.map((inv) => {
+              if (inv.id !== invoice.id) return inv
+              const withAi: Invoice = {
+                ...inv,
+                ai: {
+                  status: 'fertig',
+                  model,
+                  fields,
+                  discrepancies: compareWithAi(inv, fields),
+                  uncertainFields: aiUncertaintyNotes(fields),
+                },
+              }
+              return recalculateInvoice(withAi, weightList, selectedMonth, selectedYear, sessionMappings)
+            }),
+          )
+        } catch (error) {
+          setInvoices((prev) =>
+            prev.map((inv) => {
+              if (inv.id !== invoice.id) return inv
+              const withAi: Invoice = {
+                ...inv,
+                ai: {
+                  status: 'fehler',
+                  discrepancies: [],
+                  uncertainFields: [],
+                  error: error instanceof Error ? error.message : 'Unbekannter Fehler',
+                },
+              }
+              return recalculateInvoice(withAi, weightList, selectedMonth, selectedYear, sessionMappings)
+            }),
+          )
+        }
+      }
+      setAiProgress({ done: targets.length, total: targets.length, current: '' })
+    } finally {
+      setAiRunning(false)
+    }
+  }
+
+  /** Entscheidung zu einer KI-Abweichung: eigenen Wert behalten oder KI-Wert übernehmen. */
+  function handleResolveDiscrepancy(invoiceId: string, discrepancyId: string, resolution: 'own' | 'ai') {
+    updateInvoiceById(invoiceId, (inv) => {
+      const discrepancy = inv.ai?.discrepancies.find((d) => d.id === discrepancyId)
+      if (!discrepancy || !inv.ai) return inv
+
+      let updated: Invoice = {
+        ...inv,
+        ai: {
+          ...inv.ai,
+          discrepancies: inv.ai.discrepancies.map((d) =>
+            d.id === discrepancyId ? { ...d, resolved: true, resolution } : d,
+          ),
+        },
+      }
+
+      if (resolution === 'ai') {
+        updated = applyAiValue(updated, discrepancy)
+      }
+
+      return recalculateInvoice(updated, weightList, selectedMonth, selectedYear, sessionMappings)
+    })
   }
 
   function updateInvoiceById(invoiceId: string, updater: (invoice: Invoice) => Invoice) {
@@ -329,6 +437,24 @@ function App() {
               ? 'wird geladen…'
               : `Fehler: ${templateError}`}
         </div>
+        <div className="ai-toggle">
+          <label>
+            <input
+              type="checkbox"
+              checked={aiEnabled}
+              disabled={!aiAvailability.available}
+              onChange={(e) => setAiEnabled(e.target.checked)}
+            />{' '}
+            <strong>KI-Zweitmeinung (Claude)</strong>
+          </label>
+          <span className="hint">
+            {aiAvailability.available
+              ? aiEnabled
+                ? `Aktiv – die vollständigen Rechnungs-PDFs werden zur Gegenprüfung an die Anthropic-API übertragen${aiAvailability.model ? ` (Modell: ${aiAvailability.model})` : ''}.`
+                : 'Verfügbar, aber ausgeschaltet – ohne Aktivierung verlässt keine Rechnung Ihren Rechner.'
+              : 'Nicht verfügbar (lokaler Proxy nicht erreichbar oder kein API-Key in der .env). Die App arbeitet vollständig lokal.'}
+          </span>
+        </div>
         <details>
           <summary>Erweitert</summary>
           <div className="bundled-info__advanced">
@@ -450,6 +576,32 @@ function App() {
         {step === 4 && (
           <section>
             <h2>4. Fehler und offene Zuordnungen bearbeiten</h2>
+
+            {aiAvailability.available && (
+              <div className="ai-bar">
+                {aiRunning ? (
+                  <span>
+                    KI-Zweitmeinung läuft… {aiProgress ? `${aiProgress.done + 1} / ${aiProgress.total}` : ''}
+                    {aiProgress?.current ? ` – ${aiProgress.current}` : ''}
+                  </span>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      disabled={invoices.length === 0}
+                      onClick={() => runAiVerification(invoices, filesByInvoiceId)}
+                    >
+                      {invoices.some((inv) => inv.ai) ? 'KI-Zweitmeinung erneut einholen' : 'KI-Zweitmeinung einholen'}
+                    </button>
+                    <span className="hint">
+                      Überträgt die vollständigen Rechnungs-PDFs an die Anthropic-API. Die regelbasierte Erkennung
+                      bleibt maßgeblich; Abweichungen müssen entschieden werden.
+                    </span>
+                  </>
+                )}
+              </div>
+            )}
+
             <ReviewTable
               invoices={invoices}
               weightList={weightList}
@@ -458,6 +610,7 @@ function App() {
               onConfirmProductMapping={handleConfirmProductMapping}
               onConfirmCountry={handleConfirmCountry}
               onNegativeDecision={handleNegativeDecision}
+              onResolveDiscrepancy={handleResolveDiscrepancy}
             />
             <div className="step-actions">
               <button type="button" onClick={() => setStep(3)}>

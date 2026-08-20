@@ -8,7 +8,9 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "server": "node server/index.mjs",
+    "start": "npm run build && node server/index.mjs"
   },
   "dependencies": {
     "exceljs": "^4.4.0",

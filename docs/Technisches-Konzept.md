@@ -30,6 +30,24 @@ Spalten über die x-Positionen der Tabellenkopfzeile.
 | Grunddaten | Gewichtsliste (`src/data/gewichtsliste.ts`) und Mustertabelle (`src/assets/Mustertabelle.xlsx`) sind **fest im Anwendungspaket hinterlegt** und werden nicht hochgeladen. |
 | pdf.js-Build | Es wird der `legacy`-Build verwendet: der Standard-Build von pdf.js 6 setzt `Map.prototype.getOrInsertComputed` voraus, das aktuelle Browser nicht mitbringen – ohne den legacy-Build schlagen Fettdruck-Erkennung und OCR-Rendering fehl. |
 
+## 0b. KI-Zweitmeinung (optional, standardmäßig aus)
+
+Als Ergänzung – nicht als Ersatz – der regelbasierten Erkennung kann Claude
+jede Rechnung unabhängig auslesen.
+
+| Aspekt | Festlegung |
+|---|---|
+| Rolle | Zweitmeinung zu allen Feldern. Die regelbasierte Erkennung bleibt maßgeblich; ein KI-Wert wird **nie** automatisch übernommen. |
+| Umgang mit Abweichungen | Jede Abweichung erscheint in der Prüfansicht mit beiden Werten und muss entschieden werden („eigenen Wert behalten“ oder „KI-Wert übernehmen“). Solange eine Abweichung offen ist, ist der Export gesperrt. Übernahmen werden als manuelle Korrektur protokolliert. |
+| Übertragene Daten | Die vollständige Rechnungs-PDF (Layout und Fettdruck sind für die Erkennung nötig). |
+| Architektur | Lokaler Proxy (`server/index.mjs`), der den API-Key aus der `.env` liest und die gebaute App ausliefert. Der Key gelangt nie in das Browser-Bundle – dort wäre er öffentlich lesbar. |
+| Standardzustand | **Aus.** Ohne ausdrückliche Aktivierung in der App verlässt keine Rechnung den Rechner. |
+| Datenschutz-Abweichung | Dies weicht bewusst von der ursprünglichen Vorgabe „keine Übertragung an KI-Dienste“ ab und wurde ausdrücklich so entschieden. |
+| Modellwahl | Über `ANTHROPIC_MODEL` konfigurierbar; ohne Angabe wählt der Proxy das neueste verfügbare Sonnet-Modell des Kontos. |
+| Strukturierte Antwort | Erzwungener Werkzeugaufruf mit JSON-Schema, damit die Antwort maschinell vergleichbar ist. Die KI wird angewiesen, unsichere Felder auf `null` zu setzen und zu benennen, statt zu raten. |
+| Verfügbarkeit | Auf GitHub Pages nicht verfügbar (kein Proxy); alle übrigen Funktionen arbeiten dort unverändert. |
+| Test ohne Datenübertragung | `e2e/mock-anthropic.mjs` bildet die API nach, sodass der gesamte Weg ohne echten Key und ohne echte Rechnungsdaten geprüft werden kann. |
+
 ## 1. Bestätigte fachliche Regeln (Zusammenfassung der Antworten)
 
 | # | Regel | Entscheidung |

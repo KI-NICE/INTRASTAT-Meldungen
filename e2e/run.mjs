@@ -26,6 +26,18 @@ await page.waitForSelector('.bundled-info')
 await page.waitForTimeout(800)
 console.log(await page.locator('.bundled-info').innerText())
 
+// Optional: KI-Zweitmeinung aktivieren (E2E_AI=1)
+if (process.env.E2E_AI === '1') {
+  const checkbox = page.locator('.ai-toggle input[type=checkbox]')
+  await checkbox.waitFor()
+  if (await checkbox.isEnabled()) {
+    await checkbox.check()
+    console.log('KI-Zweitmeinung aktiviert')
+  } else {
+    console.log('KI-Zweitmeinung nicht verfuegbar (Proxy/Key fehlt)')
+  }
+}
+
 // Schritt 1: Bezugsmonat (Standard 08/2026 passt zur Beispielrechnung)
 await page.getByRole('button', { name: 'Weiter' }).click()
 
@@ -44,6 +56,32 @@ for (const meta of await page.locator('.invoice-meta').all()) console.log(await 
 
 console.log('--- PRUEFANSICHT: POSITIONEN ---')
 for (const t of await page.locator('.review-table').all()) console.log(await t.innerText(), '\n---')
+
+if (process.env.E2E_AI === '1') {
+  // Auf das Ende der KI-Pruefung warten
+  await page.waitForSelector('.ai-panel', { timeout: 120000 })
+  await page.waitForFunction(() => !document.body.innerText.includes('KI-Zweitmeinung laeuft'), null, {
+    timeout: 120000,
+  })
+  console.log('--- KI-ZWEITMEINUNG ---')
+  for (const panel of await page.locator('.ai-panel').all()) console.log(await panel.innerText(), '\n---')
+
+  // Offene Abweichungen entscheiden: erste uebernehmen, restliche eigenen Wert behalten
+  const applyButtons = page.getByRole('button', { name: 'KI-Wert uebernehmen' })
+  if ((await applyButtons.count()) > 0) {
+    console.log('Abweichung: KI-Wert wird uebernommen (Testfall)')
+    await applyButtons.first().click()
+    await page.waitForTimeout(300)
+  }
+  let keepButtons = page.getByRole('button', { name: 'Eigenen Wert behalten' })
+  while ((await keepButtons.count()) > 0) {
+    await keepButtons.first().click()
+    await page.waitForTimeout(200)
+    keepButtons = page.getByRole('button', { name: 'Eigenen Wert behalten' })
+  }
+  console.log('--- KI-ZWEITMEINUNG NACH ENTSCHEIDUNG ---')
+  for (const panel of await page.locator('.ai-panel').all()) console.log(await panel.innerText(), '\n---')
+}
 
 const issues = await page.locator('.invoice-card .issue').allInnerTexts()
 console.log('--- OFFENE MELDUNGEN ---')
