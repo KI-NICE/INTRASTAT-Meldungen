@@ -9,70 +9,67 @@ const fx = (name) => path.join(here, 'fixtures', name)
 const downloadDir = path.join(here, 'downloads')
 fs.mkdirSync(downloadDir, { recursive: true })
 
-const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' })
+const executablePath = process.env.CHROMIUM_PATH || undefined
+
+const browser = await chromium.launch(executablePath ? { executablePath } : {})
 const page = await browser.newPage()
-page.on('console', (msg) => console.log('[console]', msg.type(), msg.text()))
+page.on('console', (msg) => {
+  if (msg.type() === 'error') console.log('[console error]', msg.text())
+})
 page.on('pageerror', (err) => console.log('[pageerror]', err.message))
 
-await page.goto('http://localhost:4173/')
+const baseUrl = process.env.APP_URL || 'http://localhost:4173/'
+await page.goto(baseUrl)
 
-// Step 1: Mustertabelle
-await page.locator('input[type=file]').first().setInputFiles(fx('Mustertabelle.xlsx'))
-await page.waitForTimeout(500)
+console.log('--- HINTERLEGTE GRUNDDATEN ---')
+await page.waitForSelector('.bundled-info')
+await page.waitForTimeout(800)
+console.log(await page.locator('.bundled-info').innerText())
+
+// Schritt 1: Bezugsmonat (Standard 08/2026 passt zur Beispielrechnung)
 await page.getByRole('button', { name: 'Weiter' }).click()
 
-// Step 2: Gewichtsliste
-await page.locator('input[type=file]').first().setInputFiles(fx('Gewichtsliste.docx'))
-await page.waitForTimeout(500)
-await page.getByRole('button', { name: 'Weiter' }).click()
-
-// Step 3: Bezugsmonat (Default 08/2026 passt zur Beispielrechnung)
-await page.getByRole('button', { name: 'Weiter' }).click()
-
-// Step 4: Rechnungen
-await page.locator('input[type=file]').first().setInputFiles(fx('sample-invoice.pdf'))
+// Schritt 2: Rechnungen hochladen
+await page.locator('input[type=file]').last().setInputFiles(fx('sample-invoice.pdf'))
 await page.waitForTimeout(300)
 await page.getByRole('button', { name: 'Weiter' }).click()
 
-// Step 5: Analyse
+// Schritt 3: Analyse
 await page.getByRole('button', { name: 'Analyse starten' }).click()
-await page.waitForSelector('text=6. Fehler und offene Zuordnungen bearbeiten', { timeout: 30000 })
+await page.waitForSelector('text=4. Fehler und offene Zuordnungen bearbeiten', { timeout: 60000 })
 await page.waitForTimeout(500)
 
-const reviewHtml = await page.locator('.review-table-wrapper').innerHTML()
-console.log('--- REVIEW TABLE STATUS SNIPPET ---')
-console.log(reviewHtml.includes('badge--ok') ? 'STATUS: ok badge present' : 'STATUS: no ok badge')
-console.log(reviewHtml.includes('badge--error') ? 'STATUS: error badge present' : 'STATUS: no error badge')
+console.log('--- PRUEFANSICHT: RECHNUNGSKOPF ---')
+console.log(await page.locator('.invoice-meta').first().innerText())
 
-// Vollständigen Text der Prüfansicht für Diagnose ausgeben
-const bodyText = await page.locator('.review-table-wrapper').innerText()
-console.log('--- REVIEW TABLE TEXT ---')
-console.log(bodyText)
+console.log('--- PRUEFANSICHT: POSITIONEN ---')
+console.log(await page.locator('.review-table').first().innerText())
+
+const issues = await page.locator('.invoice-card .issue').allInnerTexts()
+console.log('--- OFFENE MELDUNGEN ---')
+console.log(issues.length === 0 ? '(keine)' : issues.join('\n'))
 
 await page.getByRole('button', { name: 'Weiter zur Vorschau' }).click()
-await page.waitForSelector('text=7. Vorschau der Intrastat-Daten')
-const previewText = await page.locator('.review-table-wrapper').innerText()
-console.log('--- PREVIEW TABLE TEXT ---')
-console.log(previewText)
+await page.waitForSelector('text=5. Vorschau der Intrastat-Daten')
+console.log('--- VORSCHAU (Spalten A-P) ---')
+console.log(await page.locator('.review-table').first().innerText())
 
 await page.getByRole('button', { name: 'Weiter zum Export' }).click()
-await page.waitForSelector('text=8. Excel-Datei exportieren')
-
-const summaryText = await page.locator('.export-summary').innerText()
-console.log('--- EXPORT SUMMARY ---')
-console.log(summaryText)
+await page.waitForSelector('text=6. Excel-Datei exportieren')
+console.log('--- EXPORT-ZUSAMMENFASSUNG ---')
+console.log(await page.locator('.export-summary').innerText())
 
 const downloadButton = page.getByRole('button', { name: /herunterladen/ })
 const isDisabled = await downloadButton.isDisabled()
-console.log('Download button disabled:', isDisabled)
+console.log('Download-Button gesperrt:', isDisabled)
 
 if (!isDisabled) {
   const [download] = await Promise.all([page.waitForEvent('download'), downloadButton.click()])
   const savePath = path.join(downloadDir, await download.suggestedFilename())
   await download.saveAs(savePath)
-  console.log('DOWNLOADED TO', savePath)
+  console.log('HERUNTERGELADEN:', savePath)
 } else {
-  console.log('Export blockiert - siehe offene Fehler oben.')
+  console.log('Export blockiert – siehe offene Meldungen oben.')
 }
 
 await browser.close()

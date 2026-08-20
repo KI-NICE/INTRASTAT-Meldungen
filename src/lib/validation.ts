@@ -30,19 +30,25 @@ export function validateInvoice(
   }
 
   if (!invoice.invoiceDateRaw) {
-    issues.push(makeIssue('invoiceDate', 'error', 'Das Rechnungsdatum wurde nicht erkannt.'))
+    issues.push(
+      makeIssue(
+        'invoiceDate',
+        'error',
+        'Das Rechnungsdatum (Feld „vom:“ unter der Rechnungsnummer) wurde nicht erkannt.',
+      ),
+    )
   }
 
   if (!invoice.referenceMonth || !invoice.referenceYear) {
     issues.push(
-      makeIssue('referenceMonth', 'error', 'Der Bezugsmonat (Feld „Vom:“) wurde nicht erkannt.'),
+      makeIssue('referenceMonth', 'error', 'Der Bezugsmonat konnte nicht aus dem Rechnungsdatum abgeleitet werden.'),
     )
   } else if (!referenceMonthMatches(invoice.referenceMonth, invoice.referenceYear, selectedMonth, selectedYear)) {
     issues.push(
       makeIssue(
         'referenceMonth',
         'error',
-        `Die Rechnung gehört laut Feld „Vom:“ zum Monat ${invoice.referenceMonth}-${invoice.referenceYear}, ausgewählt wurde aber ${selectedMonth}-${selectedYear}.`,
+        `Die Rechnung gehört laut Rechnungsdatum (${invoice.invoiceDateRaw}) zum Monat ${invoice.referenceMonth}-${invoice.referenceYear}, ausgewählt wurde aber ${selectedMonth}-${selectedYear}.`,
       ),
     )
   }
@@ -63,7 +69,11 @@ export function validateInvoice(
 
   if (invoice.netWeightTotal == null) {
     issues.push(
-      makeIssue('netWeightTotal', 'error', 'Das Netto-Gesamtgewicht der Rechnung wurde nicht erkannt.'),
+      makeIssue(
+        'netWeightTotal',
+        'error',
+        'Das Netto-Gesamtgewicht („Net weight:“ bzw. „Netto:“ in der Fußzeile) wurde nicht erkannt.',
+      ),
     )
   }
 

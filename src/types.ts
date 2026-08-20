@@ -3,19 +3,25 @@
 // Abschnitt 9) und erscheinen NIE als Arbeitsblatt/Spalte in der exportierten
 // Excel-Datei.
 
-export type MatchType = 'exact' | 'normalized' | 'manual' | 'suggested' | 'none'
+export type MatchType = 'exact' | 'normalized' | 'prefix' | 'manual' | 'suggested' | 'none'
+
+export type AddressKind = 'delivery' | 'order' | 'recipient'
 
 export type Address = {
+  kind: AddressKind
   raw: string
-  countryNameRaw?: string
+  /** Im Adressblock gefundenes Länder-Token, z. B. "A", "B" oder "Belgien". */
+  countryToken?: string
   countryCode?: string
 }
 
 export type DestinationCountryInfo = {
   code: string | null
-  source: 'delivery' | 'recipient' | 'manual' | 'unresolved'
+  /** Woraus der Code stammt – für die Nachvollziehbarkeit in der Prüfansicht. */
+  source: 'delivery' | 'order' | 'recipient' | 'gespeichertes-mapping' | 'manual' | 'unresolved'
   isManual: boolean
-  candidates?: { label: string; code: string }[]
+  /** Token, unter dem eine manuelle Zuordnung dauerhaft gespeichert wird. */
+  token?: string | null
 }
 
 export type ManualCorrection = {
@@ -88,13 +94,17 @@ export type Invoice = {
   extractionFailed: boolean
 
   invoiceNumber?: string
+  /** Rechnungsdatum aus dem Feld "vom:" direkt unter der Rechnungsnummer. */
   invoiceDateRaw?: string
-  invoiceDate?: string // ISO yyyy-mm-dd, soweit erkennbar
-  referenceMonth?: string // MM, aus "Vom:"-Feld abgeleitet
-  referenceYear?: string // JJJJ, aus "Vom:"-Feld abgeleitet (intern, für Plausibilität)
+  referenceMonth?: string // MM, aus dem Rechnungsdatum abgeleitet
+  referenceYear?: string // JJJJ, aus dem Rechnungsdatum abgeleitet (intern, für Plausibilität)
 
   recipient?: Address
+  /** Auftragsadresse – Rückfallebene, wenn keine Lieferadresse angegeben ist. */
+  orderAddress?: Address
   deliveryAddress?: Address
+  /** Adresse, die tatsächlich für das Bestimmungsland verwendet wurde. */
+  usedAddress?: Address
   destinationCountry?: DestinationCountryInfo
 
   vatIdRaw?: string

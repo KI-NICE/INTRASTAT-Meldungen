@@ -1,5 +1,19 @@
 import ExcelJS from 'exceljs'
 import type { Invoice, InvoicePosition } from '../types'
+import templateUrl from '../assets/Mustertabelle.xlsx?url'
+
+/**
+ * Lädt die fest im Projekt hinterlegte Mustertabelle. Sie ist Teil des
+ * Anwendungspakets und muss nicht manuell hochgeladen werden.
+ */
+export async function loadBundledTemplate(): Promise<TemplateInfo> {
+  const response = await fetch(templateUrl)
+  if (!response.ok) {
+    throw new Error(`Die hinterlegte Mustertabelle konnte nicht geladen werden (HTTP ${response.status}).`)
+  }
+  const buffer = await response.arrayBuffer()
+  return loadTemplate(buffer)
+}
 
 export type TemplateInfo = {
   workbook: ExcelJS.Workbook
@@ -130,4 +144,13 @@ function setNumberCell(row: ExcelJS.Row, colNumber: number, value: number): void
 
 export function buildExportFileName(month: string, year: string): string {
   return `${month}-${year}.xlsx`
+}
+
+/**
+ * Erzeugt den Export auf Basis einer FRISCH geladenen Mustertabelle. Dadurch
+ * bleiben bei mehrfachem Export keine Zeilen eines früheren Durchlaufs stehen.
+ */
+export async function createExportBuffer(invoices: Invoice[]): Promise<ExcelJS.Buffer> {
+  const template = await loadBundledTemplate()
+  return buildExportWorkbook(template, invoices)
 }

@@ -1,45 +1,66 @@
 import { PDFDocument, StandardFonts } from 'pdf-lib'
 import { writeFileSync } from 'node:fs'
 
-const lines = [
-  'Musterfirma GmbH',
-  'Beispielweg 3',
-  '1234 Beispielstadt',
-  '',
-  'Empfaenger Kunde AG',
-  'Rue de la Paix 5',
-  '1000 Bruessel',
-  'Belgien',
-  '',
-  'Lieferadresse:',
-  'Kunde Filiale',
-  'Handelskaai 12',
-  '1000 Bruessel',
-  'Belgien',
-  '',
-  'Rechnungsnummer: 2026-08-0001',
-  'Rechnungsdatum: 05.08.2026',
-  'Vom: 01.08.2026 Bis: 31.08.2026',
-  'Ihre USt-IdNr.: BE0123456789',
-  '',
-  'Position 1',
-  'Produktbezeichnung: DPZ Hobby 1.0L',
-  'Menge: 500',
-  'Zolltarif-Nr.: 39235000',
-  'Betrag: 1.250,00 EUR',
-  '',
-  'Netto-Gesamtgewicht: 165 kg',
-  'Warenwert gesamt: 1.250,00 EUR',
+/**
+ * Erzeugt eine synthetische Beispielrechnung im Layout der echten Rechnungen
+ * (keine echten Kunden-/Rechnungsdaten). Absatzabstände werden über groessere
+ * y-Sprünge dargestellt, damit die Adressblöcke sauber getrennt sind.
+ */
+
+// [Text, Extra-Abstand davor]
+const blocks = [
+  ['Muster Verpackung GmbH', 0],
+  ['Industriestr. 1', 0],
+  ['D-70173 Stuttgart', 0],
+
+  ['Beispiel Kunde AG', 1],
+  ['Rue de la Paix 5', 0],
+  ['B-1000 Bruessel', 0],
+
+  ['Auftragsadresse:', 1],
+  ['Beispiel Kunde AG', 0],
+  ['Rue de la Paix 5', 0],
+  ['B-1000 Bruessel', 0],
+
+  ['Lieferadresse:', 1],
+  ['Beispiel Kunde Werk Nord', 0],
+  ['Handelskaai 12', 0],
+  ['A-1010 Wien', 0],
+
+  ['Rechnungsnummer: 2026-08-0001', 1],
+  ['vom: 05.08.2026', 0],
+  ['Ihr Auftrag vom: 15.07.2026', 0],
+  ['Ihre USt-IdNr.: BE 0123456789', 0],
+
+  ['Pos   Menge          Bezeichnung                Einzelpreis      Betrag', 1],
+  ['1', 1],
+  ['500,00 Stueck', 0],
+  ['Sprayer K2 rot mit Kappe 28/410', 0],
+  ['2,50                 1.250,00', 0],
+  ['Zolltarif-Nr.: 39235000', 0],
+
+  ['2', 1],
+  ['1.000,00 Stueck', 0],
+  ['Sicherheitsverschluss weiss', 0],
+  ['0,45                   450,00', 0],
+  ['Zolltarif-Nr..: 39233010', 0],
+
+  ['**************************************************', 1],
+  ['Net weight: 32,00 kg', 0],
 ]
 
 const doc = await PDFDocument.create()
 const page = doc.addPage([595, 842])
 const font = await doc.embedFont(StandardFonts.Helvetica)
+
 let y = 800
-for (const line of lines) {
-  page.drawText(line, { x: 50, y, size: 11, font })
-  y -= 16
+const lineHeight = 14
+for (const [text, gapBefore] of blocks) {
+  y -= gapBefore * lineHeight * 1.6
+  page.drawText(text, { x: 50, y, size: 10, font })
+  y -= lineHeight
 }
+
 const bytes = await doc.save()
 writeFileSync(new URL('./fixtures/sample-invoice.pdf', import.meta.url), bytes)
-console.log('written')
+console.log('sample-invoice.pdf geschrieben')

@@ -10,9 +10,9 @@ let invoiceCounter = 0
 /**
  * Berechnet Produktzuordnung, Gewichte, Beträge und den statistischen Wert
  * für alle Positionen einer Rechnung neu und führt anschließend die
- * Validierung (Anforderung Abschnitt 8) aus. Wird sowohl bei der initialen
- * PDF-Verarbeitung als auch nach jeder manuellen Korrektur in der Prüfansicht
- * aufgerufen, damit der Zustand stets konsistent ist.
+ * Validierung aus. Wird sowohl bei der initialen PDF-Verarbeitung als auch
+ * nach jeder manuellen Korrektur in der Prüfansicht aufgerufen, damit der
+ * Zustand stets konsistent bleibt.
  */
 export function recalculateInvoice(
   invoice: Invoice,
@@ -23,11 +23,16 @@ export function recalculateInvoice(
 ): Invoice {
   const positions: InvoicePosition[] = invoice.positions.map((position) => {
     if (position.isCreditOrDiscountOrNegative) {
-      return { ...position, productMatch: undefined, calculatedWeightKgRaw: undefined, calculatedWeightKgRounded: undefined }
+      return {
+        ...position,
+        productMatch: undefined,
+        calculatedWeightKgRaw: undefined,
+        calculatedWeightKgRounded: undefined,
+      }
     }
 
-    // Eine bereits manuell bestätigte Zuordnung (matchType 'manual') bleibt
-    // erhalten, statt erneut automatisch ermittelt zu werden.
+    // Eine bereits manuell bestätigte Zuordnung bleibt erhalten, statt erneut
+    // automatisch ermittelt zu werden.
     const productMatch =
       position.productMatch?.matchType === 'manual'
         ? position.productMatch
@@ -81,8 +86,7 @@ export function recalculateInvoice(
 
 /**
  * Verarbeitet eine hochgeladene PDF-Datei vollständig: Text-/OCR-Extraktion,
- * Feld- und Positionserkennung, Produktzuordnung, Berechnungen und
- * Validierung. Liefert ein vollständiges Invoice-Objekt für die Prüfansicht.
+ * Feld- und Positionserkennung, Produktzuordnung, Berechnungen, Validierung.
  */
 export async function processInvoiceFile(
   file: File,
@@ -96,7 +100,11 @@ export async function processInvoiceFile(
 
   const { text, ocrUsed, extractionFailed } = await extractPdfText(file)
   const fields = parseInvoiceText(text)
-  const destination = determineDestinationCountry(fields.deliveryAddress, fields.recipient)
+  const destination = determineDestinationCountry(
+    fields.deliveryAddress,
+    fields.orderAddress,
+    fields.recipient,
+  )
 
   const baseInvoice: Invoice = {
     id,
@@ -109,11 +117,14 @@ export async function processInvoiceFile(
     referenceMonth: fields.referenceMonth,
     referenceYear: fields.referenceYear,
     recipient: fields.recipient,
+    orderAddress: fields.orderAddress,
     deliveryAddress: fields.deliveryAddress,
+    usedAddress: destination.usedAddress,
     destinationCountry: {
       code: destination.code,
       source: destination.source,
       isManual: false,
+      token: destination.token,
     },
     vatIdRaw: fields.vatIdRaw,
     vatId: fields.vatId,

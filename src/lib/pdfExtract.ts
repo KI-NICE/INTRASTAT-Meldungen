@@ -86,11 +86,14 @@ function joinTextItemsWithLineBreaks(items: unknown[]): string {
 
   let currentLine: Fragment[] = [fragments[0]]
   const lines: Fragment[][] = [currentLine]
+  const gaps: number[] = []
 
   for (let i = 1; i < fragments.length; i++) {
     const previous = currentLine[currentLine.length - 1]
     const fragment = fragments[i]
-    if (Math.abs(fragment.y - previous.y) > Y_TOLERANCE) {
+    const gap = Math.abs(fragment.y - previous.y)
+    if (gap > Y_TOLERANCE) {
+      gaps.push(gap)
       currentLine = [fragment]
       lines.push(currentLine)
     } else {
@@ -98,17 +101,37 @@ function joinTextItemsWithLineBreaks(items: unknown[]): string {
     }
   }
 
-  return lines
-    .map((line) =>
-      line
-        .sort((a, b) => a.x - b.x)
-        .map((f) => f.str)
-        .join(' ')
-        .replace(/\s+/g, ' ')
-        .trim(),
-    )
-    .filter((line) => line.length > 0)
+  // Typischer Zeilenabstand als Median – deutlich größere Abstände werden als
+  // Absatzwechsel behandelt und mit einer Leerzeile markiert. Das erlaubt es,
+  // Adressblöcke später zuverlässig voneinander zu trennen.
+  const sortedGaps = [...gaps].sort((a, b) => a - b)
+  const medianGap = sortedGaps.length > 0 ? sortedGaps[Math.floor(sortedGaps.length / 2)] : 0
+  const paragraphThreshold = medianGap > 0 ? medianGap * 1.8 : Number.POSITIVE_INFINITY
+
+  const renderedLines: string[] = []
+  for (let i = 0; i < lines.length; i++) {
+    if (i > 0) {
+      const previousY = lines[i - 1][0].y
+      const currentY = lines[i][0].y
+      if (Math.abs(currentY - previousY) > paragraphThreshold) {
+        renderedLines.push('')
+      }
+    }
+    const text = lines[i]
+      .slice()
+      .sort((a, b) => a.x - b.x)
+      .map((f) => f.str)
+      .join(' ')
+      .replace(/[ \t]+/g, ' ')
+      .trim()
+    renderedLines.push(text)
+  }
+
+  // Mehrfache Leerzeilen zusammenfassen, führende/abschließende entfernen
+  return renderedLines
     .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
 }
 
 async function ocrPage(page: pdfjsLib.PDFPageProxy): Promise<string> {
