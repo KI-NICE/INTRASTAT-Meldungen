@@ -35,6 +35,7 @@ import {
 import { loadActiveWeightMap, saveActiveWeightMap } from './lib/activeWeightMapStore'
 import { summarizeInvoices } from './lib/calculations'
 import klaegerGroupSchwarz from './assets/klaeger-group-schwarz.png'
+import klaegerGroupWeiss from './assets/klaeger-group-weiss.png'
 import klaegerSpcPetrol from './assets/klaeger-spc-petrol.png'
 import klaegerStRot from './assets/klaeger-st-rot.png'
 
@@ -103,11 +104,11 @@ function newId(prefix: string): string {
 }
 
 /**
- * Vor der Firmenwahl steht das Kläger-Group-Logo in Schwarz (Originaldatei).
- * Nach der Wahl wird dieselbe Bildmarke per CSS-Maske in der Firmenfarbe
- * eingefärbt ("weiße" Variante gibt es als eigene Datei nicht) – die Maske
- * nutzt den Alphakanal des Schwarz-Logos, die Füllfarbe kommt von
- * `background-color`.
+ * Vor der Firmenwahl steht das Kläger-Group-Logo in Schwarz. Nach der Wahl
+ * wird die weiße Bildmarke per CSS-Maske in der Firmenfarbe eingefärbt – die
+ * Maske nutzt den Alphakanal des Weiß-Logos, die Füllfarbe kommt von
+ * `background-color` (so muss die Datei nicht separat je Firmenfarbe
+ * vorgehalten werden).
  */
 function AppHeader({ subtitle, company }: { subtitle?: ReactNode; company: Company | null }) {
   return (
@@ -118,8 +119,8 @@ function AppHeader({ subtitle, company }: { subtitle?: ReactNode; company: Compa
           role="img"
           aria-label="Kläger Group"
           style={{
-            WebkitMaskImage: `url(${klaegerGroupSchwarz})`,
-            maskImage: `url(${klaegerGroupSchwarz})`,
+            WebkitMaskImage: `url(${klaegerGroupWeiss})`,
+            maskImage: `url(${klaegerGroupWeiss})`,
             backgroundColor: COMPANY_THEME[company].brand,
           }}
         />
