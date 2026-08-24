@@ -1,66 +1,55 @@
 import { describe, it, expect } from 'vitest'
-import { resolveCountryToken, detectCountryFromAddress, listKnownCountries } from '../countryCodes'
+import {
+  listKnownCountries,
+  countryDisplayName,
+  resolveCountryFromVatId,
+  crosscheckDestinationCountryWithVatId,
+} from '../countryCodes'
 
-describe('resolveCountryToken', () => {
-  it('übersetzt die klassischen Länderkennzeichen', () => {
-    expect(resolveCountryToken('A')).toBe('AT')
-    expect(resolveCountryToken('B')).toBe('BE')
-    expect(resolveCountryToken('D')).toBe('DE')
-    expect(resolveCountryToken('F')).toBe('FR')
-    expect(resolveCountryToken('I')).toBe('IT')
-    expect(resolveCountryToken('E')).toBe('ES')
-    expect(resolveCountryToken('L')).toBe('LU')
-    expect(resolveCountryToken('S')).toBe('SE')
-    expect(resolveCountryToken('H')).toBe('HU')
-    expect(resolveCountryToken('P')).toBe('PT')
-    expect(resolveCountryToken('SLO')).toBe('SI')
-    expect(resolveCountryToken('NL')).toBe('NL')
+describe('resolveCountryFromVatId', () => {
+  it('liest das Länderkürzel aus dem Präfix der USt-IdNr.', () => {
+    expect(resolveCountryFromVatId('BE0123456789')).toBe('BE')
+    expect(resolveCountryFromVatId('de123456789')).toBe('DE')
   })
 
-  it('erkennt ausgeschriebene Ländernamen (deutsch und englisch)', () => {
-    expect(resolveCountryToken('Österreich')).toBe('AT')
-    expect(resolveCountryToken('Frankreich')).toBe('FR')
-    expect(resolveCountryToken('Italy')).toBe('IT')
-    expect(resolveCountryToken('  belgien ')).toBe('BE')
+  it('übersetzt die abweichenden USt-IdNr.-Präfixe (Griechenland, Nordirland)', () => {
+    expect(resolveCountryFromVatId('EL123456789')).toBe('GR')
+    expect(resolveCountryFromVatId('XI123456789')).toBe('GB')
   })
 
-  it('gibt null zurück, wenn nichts eindeutig zuordenbar ist', () => {
-    expect(resolveCountryToken('Nirgendland')).toBeNull()
-    expect(resolveCountryToken('XY')).toBeNull()
-    expect(resolveCountryToken('')).toBeNull()
-    expect(resolveCountryToken(undefined)).toBeNull()
+  it('gibt null zurück, wenn kein gültiges Präfix erkennbar ist', () => {
+    expect(resolveCountryFromVatId('XY123456789')).toBeNull()
+    expect(resolveCountryFromVatId(undefined)).toBeNull()
+    expect(resolveCountryFromVatId('')).toBeNull()
   })
 })
 
-describe('detectCountryFromAddress', () => {
-  it('erkennt das Kennzeichen vor der Postleitzahl', () => {
-    const result = detectCountryFromAddress('Kunde AG\nHandelskaai 12\nA-1010 Wien')
-    expect(result.code).toBe('AT')
-    expect(result.token).toBe('A')
-    expect(result.source).toBe('plz-praefix')
+describe('crosscheckDestinationCountryWithVatId', () => {
+  it('überschreibt das von Claude gelesene Land bei Abweichung von der USt-IdNr.', () => {
+    const destination = { code: 'AT', source: 'ai' as const, isManual: false }
+    const result = crosscheckDestinationCountryWithVatId(destination, 'BE0123456789')
+    expect(result?.code).toBe('BE')
+    expect(result?.source).toBe('vat-id-override')
+    expect(result?.overriddenAddressCode).toBe('AT')
+    expect(result?.needsConfirmation).toBe(false)
   })
 
-  it('funktioniert auch mit Leerzeichen um den Bindestrich', () => {
-    expect(detectCountryFromAddress('NL - 1234 AB Amsterdam').code).toBe('NL')
+  it('lässt das Land unverändert, wenn es zur USt-IdNr. passt', () => {
+    const destination = { code: 'BE', source: 'ai' as const, isManual: false }
+    const result = crosscheckDestinationCountryWithVatId(destination, 'BE0123456789')
+    expect(result).toBe(destination)
   })
 
-  it('erkennt einen ausgeschriebenen Ländernamen in eigener Zeile', () => {
-    const result = detectCountryFromAddress('Kunde AG\nRue 5\n1000 Bruxelles\nBelgien')
-    expect(result.code).toBe('BE')
-    expect(result.source).toBe('landname')
+  it('überschreibt eine bereits manuell bestätigte Auswahl nicht', () => {
+    const destination = { code: 'AT', source: 'manual' as const, isManual: true }
+    const result = crosscheckDestinationCountryWithVatId(destination, 'BE0123456789')
+    expect(result).toBe(destination)
   })
 
-  it('meldet ein unbekanntes Kennzeichen als Token ohne Code', () => {
-    const result = detectCountryFromAddress('Kunde AG\nVia Roma 1\nXY-00100 Roma')
-    expect(result.code).toBeNull()
-    expect(result.token).toBe('XY')
-  })
-
-  it('liefert kein Token, wenn nichts erkennbar ist', () => {
-    const result = detectCountryFromAddress('Kunde AG\nSome Street 5')
-    expect(result.code).toBeNull()
-    expect(result.token).toBeNull()
-    expect(result.source).toBe('kein-token')
+  it('lässt das Land unverändert, wenn die USt-IdNr. kein gültiges Präfix hat', () => {
+    const destination = { code: 'AT', source: 'ai' as const, isManual: false }
+    expect(crosscheckDestinationCountryWithVatId(destination, undefined)).toBe(destination)
+    expect(crosscheckDestinationCountryWithVatId(destination, 'XY0123456789')).toBe(destination)
   })
 })
 
@@ -71,5 +60,16 @@ describe('listKnownCountries', () => {
     const codes = list.map((c) => c.code)
     expect(new Set(codes).size).toBe(codes.length)
     expect(list[0].name.localeCompare(list[1].name, 'de')).toBeLessThanOrEqual(0)
+  })
+})
+
+describe('countryDisplayName', () => {
+  it('liefert den Anzeigenamen zu einem bekannten Code', () => {
+    expect(countryDisplayName('BE')).toBe('Belgien')
+  })
+
+  it('gibt einen Platzhalter zurück, wenn kein Code vorliegt', () => {
+    expect(countryDisplayName(null)).toBe('—')
+    expect(countryDisplayName(undefined)).toBe('—')
   })
 })

@@ -1,5 +1,5 @@
 /**
- * Lokaler Proxy-Server für die KI-Zweitmeinung.
+ * Lokaler Proxy-Server, über den Claude Rechnungs-PDFs liest.
  *
  * Zweck: Der Anthropic-API-Key bleibt ausschließlich auf dem Server. Die
  * Web-App kennt ihn nicht und kann ihn nicht preisgeben – anders als bei einem
@@ -11,12 +11,10 @@
  *
  *   npm run build && npm run server      (oder: npm start)
  *
- * Ohne Key startet der Server trotzdem – die App läuft dann ohne
- * KI-Zweitmeinung weiter.
- *
- * WICHTIG: Bei aktivierter KI-Prüfung werden vollständige Rechnungs-PDFs an
- * die Anthropic-API übertragen. Ohne diese Funktion verlässt keine Rechnung
- * den Rechner.
+ * WICHTIG: Claude ist die einzige Quelle der Rechnungsdaten – es gibt keine
+ * eigene, deterministische PDF-Auswertung mehr. Ohne Key bzw. ohne
+ * erreichbaren Proxy ist die App nicht funktionsfähig; jede Rechnung wird
+ * vollständig an die Anthropic-API übertragen.
  */
 
 import { createServer } from 'node:http'
@@ -102,7 +100,7 @@ async function resolveModel() {
 const RESULT_TOOL = {
   name: 'rechnungsdaten',
   description:
-    'Gibt die aus der Rechnung gelesenen Felder strukturiert zurück. Nicht eindeutig lesbare Felder werden auf null gesetzt.',
+    'Gibt die aus der Rechnung gelesenen Felder strukturiert zurück. Diese Felder sind die alleinige Grundlage der Intrastat-Meldung. Nicht eindeutig lesbare Felder werden auf null gesetzt.',
   input_schema: {
     type: 'object',
     properties: {
@@ -120,14 +118,30 @@ const RESULT_TOOL = {
       },
       destinationAddressUsed: {
         type: ['string', 'null'],
-        enum: ['lieferadresse', 'auftragsadresse', 'empfaengeradresse', null],
+        enum: ['lieferadresse', 'auftragsadresse', 'empfaengeradresse', 'versandanschrift', null],
         description: 'Welche Adresse für das Bestimmungsland verwendet wurde',
+      },
+      destinationAddressText: {
+        type: ['string', 'null'],
+        description:
+          'Die für das Bestimmungsland verwendete Adresse als vollständiger Text (Zeilen durch "\\n" getrennt), damit manuelle Korrekturen adressgenau gespeichert werden können.',
       },
       netWeightTotalKg: {
         type: ['number', 'null'],
-        description: 'Netto-Gesamtgewicht in kg aus der Fußzeile hinter der Sternchenlinie ("Net weight:"/"Netto:")',
+        description:
+          'Netto-Gesamtgewicht in kg. Suche sinngemäß im gesamten Dokument danach – die Beschriftung variiert stark, u. a. "Netto:", "Nettogewicht", "NET", "Net.", "Net Weight", "Net Wt.", "N.W." (unabhängig von Groß-/Kleinschreibung, Abkürzung oder ob ein Doppelpunkt folgt). Meist in der Fußzeile (oft hinter einer Sternchen-Trennlinie), das ist aber keine Voraussetzung. Verwechsle es NIEMALS mit einem Brutto-Gewicht ("Brutto", "Gross Weight", "Peso lordo") oder einem Geldbetrag in EUR.',
       },
       freightCostEur: { type: ['number', 'null'], description: 'Ausgewiesene Frachtkosten in EUR, sonst null' },
+      versendungsmitgliedstaatCode: {
+        type: ['string', 'null'],
+        description:
+          'Nur bei Eingangsrechnungen: zweistelliger ISO-3166-1-Alpha-2-Code des Landes, aus dem die Ware tatsächlich versendet wurde (Lieferantenadresse/Versandort). Bei Ausgangsrechnungen immer null.',
+      },
+      ursprungslandCode: {
+        type: ['string', 'null'],
+        description:
+          'Nur bei Eingangsrechnungen: zweistelliger ISO-3166-1-Alpha-2-Code des tatsächlichen Ursprungslandes der Ware (kann vom Versandland abweichen), sofern erkennbar. Sonst null.',
+      },
       positions: {
         type: 'array',
         description: 'Alle Rechnungspositionen in der Reihenfolge der Rechnung',
@@ -136,7 +150,11 @@ const RESULT_TOOL = {
           properties: {
             positionNumber: { type: ['string', 'null'], description: 'Positionsnummer, linksbündig fett (z. B. "10", "20")' },
             productDescription: { type: ['string', 'null'], description: 'Vollständige Artikelbezeichnung rechts der Positionsnummer' },
-            customsCode: { type: ['string', 'null'], description: 'Warennummer aus "Zolltarif-Nr.:" bzw. "Customs tariff no.:", nur Ziffern' },
+            customsCode: {
+              type: ['string', 'null'],
+              description:
+                'Warennummer aus "Zolltarif-Nr.:" bzw. "Customs tariff no.:", nur Ziffern. Die Warennummer ist IMMER genau 8-stellig – lies alle Ziffern sorgfältig und vollständig ab, insbesondere führende Nullen (z. B. "03926000"), die leicht übersehen werden. Gib den Wert exakt wie auf der Rechnung abgedruckt zurück, auch wenn er ausnahmsweise nicht 8-stellig erscheinen sollte – erfinde und kürze keine Ziffern.',
+            },
             quantity: {
               type: ['number', 'null'],
               description: 'Stückzahl aus der FETT gesetzten Zahl (z. B. "1000 Stück"). Achtung: Preise sind "per 100" angegeben und sind NICHT die Menge.',
@@ -150,6 +168,11 @@ const RESULT_TOOL = {
             isCreditOrDiscount: {
               type: ['boolean', 'null'],
               description: 'true bei Gutschrift, Storno, Rabatt oder negativem Betrag',
+            },
+            articleNumber: {
+              type: ['string', 'null'],
+              description:
+                'Fett gesetzte Artikelnummer unter der Spaltenüberschrift "Artikelangaben" bzw. "Part description" (bei ausländischen Eingangsrechnungen z. B. auch "Your Code"/"Your Ref."), über der eigentlichen Artikelbezeichnung. Gib sie für JEDE Position an, bei der eine solche Nummer erkennbar ist (nicht nur für Frachtkosten-Positionen wie "090025") – sie identifiziert den Artikel eindeutig und unabhängig von Schreibweise-Varianten der Bezeichnung. Sonst null.',
             },
           },
           required: ['positionNumber', 'productDescription', 'customsCode', 'quantity', 'amountEur'],
@@ -165,7 +188,7 @@ const RESULT_TOOL = {
   },
 }
 
-const SYSTEM_PROMPT = `Du prüfst Ausgangsrechnungen für eine Intrastat-Meldung und liest die Felder als unabhängige Zweitmeinung aus.
+const SYSTEM_PROMPT_BASE = `Du liest Rechnungen (Ausgangs- oder Eingangsrechnungen) für eine Intrastat-Meldung vollständig und verbindlich aus. Deine Angaben sind die alleinige Grundlage der Meldung – es gibt keine weitere Prüfung.
 
 Verbindliche Regeln:
 - Lies ausschließlich, was in der Rechnung steht. Rate nichts. Ist ein Wert nicht eindeutig lesbar, setze ihn auf null und nenne das Feld in "uncertainFields".
@@ -173,21 +196,49 @@ Verbindliche Regeln:
 - Die Rechnungsnummer steht oben rechts fett neben der Überschrift "RECHNUNG" bzw. "INVOICE".
 - Jede Position beginnt mit einer linksbündigen, fett gesetzten Positionsnummer ("10", "20", ...). Rechts davon beginnt die Artikelbezeichnung.
 - Die Menge ist ausschließlich die fett gesetzte Stückzahl. Preise sind "per 100" angegeben und dürfen nie als Menge gelesen werden.
-- Das Netto-Gesamtgewicht steht in der Fußzeile hinter einer Sternchen-Trennlinie, beschriftet mit "Net weight:" oder "Netto:". Ein Netto-Geldbetrag in EUR ist nicht das Gewicht.
-- Das Bestimmungsland ergibt sich aus dem Länderkennzeichen vor der Postleitzahl der Lieferadresse, ersatzweise der Auftragsadresse. Wandle es in den ISO-3166-1-Alpha-2-Code um (A→AT, B→BE, D→DE, F→FR, I→IT, E→ES, L→LU, S→SE, H→HU, P→PT, SLO→SI, NL→NL, ...).
+- Das Netto-Gesamtgewicht muss SINNGEMÄSS im gesamten Dokument gesucht werden – die Beschriftung ist von Rechnung zu Rechnung unterschiedlich, u. a. "Netto:", "Nettogewicht", "NET", "Net.", "Net Weight", "Net Wt.", "N.W." (unabhängig von Groß-/Kleinschreibung, Abkürzung oder ob ein Doppelpunkt folgt). Meist steht es in der Fußzeile (oft hinter einer Sternchen-Trennlinie), das ist aber keine Voraussetzung – suche notfalls auf der GESAMTEN Seite danach. Ein Netto-GELDBETRAG in EUR oder ein Brutto-Gewicht ("Brutto", "Gross Weight", "Peso lordo") ist NICHT das gesuchte Gewicht.
+- Das Bestimmungsland ergibt sich aus dem Länderkennzeichen vor der Postleitzahl der Lieferadresse, ersatzweise der Auftragsadresse. Wandle es in den ISO-3166-1-Alpha-2-Code um (A→AT, B→BE, D→DE, F→FR, I→IT, E→ES, L→LU, S→SE, H→HU, P→PT, SLO→SI, NL→NL, ...). Gib zusätzlich die verwendete Adresse vollständig als Text zurück ("destinationAddressText").
 - Steht bei Flaschenartikeln ("Zyl.", "Zylinderflasche", "Zylk.", "FL", "VK", "Vierkant") ein Gewicht in der Produktbeschreibung (z. B. "Gew.:20 g"), gib es als weightPerPieceGrams an. Sonst null.
+- Steht unter der Spaltenüberschrift "Artikelangaben" bzw. "Part description" eine fett gesetzte Artikelnummer über der Artikelbezeichnung, gib sie als "articleNumber" der Position an – bei JEDER Position, nicht nur bei Frachtkosten-Positionen (z. B. "090025"). Sonst null.`
+
+const SYSTEM_PROMPT_AUSGANG_EXTRA = `
+- Diese Rechnung ist eine AUSGANGSRECHNUNG. Oben links auf der Rechnung steht fett die Überschrift "Rechnungsempfänger" (bzw. "Invoice recipient"/"Bill to") mit der Kundenadresse darunter. DIES ist die für das Bestimmungsland maßgebliche Adresse ("destinationAddressUsed": "empfaengeradresse") – bevorzuge sie gegenüber der Lieferadresse und der Auftragsadresse. Weiche nur dann auf die Lieferadresse bzw. ersatzweise die Auftragsadresse aus, wenn unter "Rechnungsempfänger" keine eindeutige Adresse mit Länderkennzeichen erkennbar ist.
+- Manche Ausgangsrechnungen enthalten zusätzlich eine eigens beschriftete "Versandanschrift" (bzw. "Shipping address"/"Ship to"). Ist eine solche Überschrift vorhanden, ist die DARUNTER stehende Adresse die tatsächliche Empfangsadresse und für das Bestimmungsland maßgeblich ("destinationAddressUsed": "versandanschrift") – sie hat dann VORRANG vor der Adresse im Briefkopf oben auf der Rechnung sowie vor "Rechnungsempfänger", "Lieferadresse" und "Auftragsadresse". Die Adresse im Briefkopf ist in diesem Fall lediglich die Rechnungsadresse und NICHT für das Bestimmungsland relevant.
+- Das Netto-Gesamtgewicht steht bei Ausgangsrechnungen fast immer relativ weit unten in der Fußzeile, typischerweise HINTER einer langen Trennlinie aus Sternchen (z. B. "**************************************************") gefolgt von "Netto:" und dem Gewichtswert. Suche GEZIELT und AKRIBISCH nach genau diesem Muster (Sternchen-Trennlinie, dann "Netto:") ganz unten auf der Seite, bevor du das Feld als unsicher/null meldest – dieser Wert wird sonst leicht übersehen, weil er weit vom eigentlichen Rechnungskopf entfernt steht.`
+
+const SYSTEM_PROMPT_EINGANG_EXTRA = `
+- Diese Rechnung ist eine EINGANGSRECHNUNG. Lies zusätzlich, sofern auf der Rechnung erkennbar:
+  - "versendungsmitgliedstaatCode": ISO-3166-1-Alpha-2-Code des Landes, aus dem die Ware tatsächlich versendet wurde (Absender-/Lieferantenadresse, Versandort).
+  - "ursprungslandCode": ISO-3166-1-Alpha-2-Code des tatsächlichen Ursprungslandes der Ware (kann vom Versandland abweichen, z. B. bei Reexport).
+  Ist einer dieser Werte auf der Rechnung nicht eindeutig erkennbar, setze ihn auf null und nenne das Feld in "uncertainFields" – er wird dann in der Prüfansicht manuell nachgetragen.
+- Das Netto-Gesamtgewicht ("netWeightTotalKg") kann bei Eingangsrechnungen an einer beliebigen Stelle im Dokument stehen (Kopf, Fußzeile, als Summenzeile der Positionstabelle o. ä.) und uneinheitlich beschriftet sein. Es kann auch HANDSCHRIFTLICH ergänzt worden sein (z. B. als handschriftliche Notiz oder Korrektur am Rand, über oder neben einem gedruckten Wert) – durchsuche das gesamte Dokument sinngemäß auch nach solchen handschriftlichen Vermerken, nicht nur nach gedrucktem Text. Analysiere das gesamte Dokument sinngemäß und verwende den wahrscheinlichsten Kandidaten (eine erkennbare handschriftliche Korrektur hat dabei Vorrang vor einem durchgestrichenen oder abweichenden gedruckten Wert). Gibt es mehrere mögliche Zahlen und ist nicht eindeutig erkennbar, welche das tatsächliche Netto-Gesamtgewicht ist, oder findet sich gar kein plausibler Kandidat, setze den Wert auf null (für die manuelle Nacherfassung) – rate NICHT.
+- Eingangsrechnungen stammen von unterschiedlichsten Lieferanten und können in JEDER Sprache verfasst sein, überwiegend Deutsch, Englisch oder Italienisch, aber auch andere. Verlasse dich NIE auf eine einzelne erwartete Sprache oder ein festes Layout. Erkenne die relevanten Positions-Spalten anhand ihrer BEDEUTUNG, unabhängig von der genauen Bezeichnung auf der Rechnung – u. a. anhand dieser sprachübergreifenden Synonyme:
+  - Menge/Stückzahl: "Menge", "Anzahl", "Stück" (DE) · "Quantity", "Qty", "Q.TY", "Amount" (wenn eindeutig eine Stückzahl und kein Geldbetrag) (EN) · "Quantità", "Q.tà", "Pezzi" (IT)
+  - Artikelbezeichnung: "Artikel", "Bezeichnung", "Warenbezeichnung" (DE) · "Description", "Item", "Product", "Goods" (EN) · "Descrizione", "Articolo" (IT)
+  - Warennummer/Zolltarifnummer: "Zolltarif-Nr.", "Warennummer", "HS-Code" (DE) · "Customs tariff no.", "HS code", "Commodity code", "Tariff no." (EN) · "Codice doganale", "Voce doganale", "Codice HS" (IT)
+  - Artikelnummer ("articleNumber"): "Artikelangaben", "Artikel-Nr." (DE) · "Part description", "Part no.", "Your Code", "Your Ref." (EN) · "Codice articolo", "Cod. art." (IT)
+  - Positionsbetrag: "Betrag", "Gesamtpreis", "Summe" (DE) · "Amount", "Total", "Net amount" (EN) · "Importo", "Totale", "Prezzo totale" (IT)
+  - Rechnungsdatum: "Rechnungsdatum", "vom" (DE) · "Invoice date", "Date", "Dated" (EN) · "Data fattura", "Data" (IT)
+  Ist eine Spaltenüberschrift in einer anderen Sprache oder ungewohnt beschriftet, ordne sie anhand von Kontext (Position in der Tabelle, Zahlenformat, übliche Reihenfolge Menge → Beschreibung → Preis) der richtigen Bedeutung zu, statt das Feld null zu lassen.`
+
+const SYSTEM_PROMPT_FOOTER = `
 
 Gib das Ergebnis ausschließlich über das Werkzeug "rechnungsdaten" zurück.`
 
+function buildSystemPrompt(richtung) {
+  const extra = richtung === 'E' ? SYSTEM_PROMPT_EINGANG_EXTRA : SYSTEM_PROMPT_AUSGANG_EXTRA
+  return SYSTEM_PROMPT_BASE + extra + SYSTEM_PROMPT_FOOTER
+}
+
 /* ---------------------------------------------------------- API-Aufruf */
 
-async function callAnthropic(pdfBase64, fileName) {
+async function callAnthropic(pdfBase64, fileName, richtung) {
   const model = await resolveModel()
 
   const payload = {
     model,
     max_tokens: 8000,
-    system: SYSTEM_PROMPT,
+    system: buildSystemPrompt(richtung),
     tools: [RESULT_TOOL],
     tool_choice: { type: 'tool', name: RESULT_TOOL.name },
     messages: [
@@ -256,11 +307,7 @@ const MIME_TYPES = {
   '.png': 'image/png',
   '.ico': 'image/x-icon',
   '.wasm': 'application/wasm',
-  '.pfb': 'application/octet-stream',
-  '.bcmap': 'application/octet-stream',
   '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  '.traineddata': 'application/octet-stream',
-  '.gz': 'application/gzip',
 }
 
 function sendJson(res, status, data) {
@@ -348,8 +395,8 @@ const server = createServer(async (req, res) => {
       available: API_KEY.length > 0,
       model: resolvedModel ?? CONFIGURED_MODEL ?? null,
       hinweis: API_KEY.length > 0
-        ? 'KI-Zweitmeinung verfügbar. Dabei werden vollständige Rechnungs-PDFs an die Anthropic-API übertragen.'
-        : 'Kein ANTHROPIC_API_KEY gesetzt – die App läuft ohne KI-Zweitmeinung.',
+        ? 'Claude verfügbar. Vollständige Rechnungs-PDFs werden zum Auslesen an die Anthropic-API übertragen.'
+        : 'Kein ANTHROPIC_API_KEY gesetzt – ohne Claude ist die App nicht funktionsfähig.',
     })
     return
   }
@@ -361,12 +408,12 @@ const server = createServer(async (req, res) => {
     }
     try {
       const raw = await readBody(req)
-      const { fileName, pdfBase64 } = JSON.parse(raw.toString('utf8'))
+      const { fileName, pdfBase64, richtung } = JSON.parse(raw.toString('utf8'))
       if (!pdfBase64) {
         sendJson(res, 400, { error: 'Es wurde keine PDF übermittelt.' })
         return
       }
-      const result = await callAnthropic(pdfBase64, fileName ?? 'Rechnung.pdf')
+      const result = await callAnthropic(pdfBase64, fileName ?? 'Rechnung.pdf', richtung)
       sendJson(res, 200, result)
     } catch (error) {
       console.error('[verify]', error)
@@ -387,8 +434,8 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log(`Intrastat-App: http://localhost:${PORT}`)
   console.log(
     API_KEY
-      ? 'KI-Zweitmeinung: aktiv (Rechnungs-PDFs werden bei Nutzung an die Anthropic-API übertragen)'
-      : 'KI-Zweitmeinung: inaktiv (kein ANTHROPIC_API_KEY in der .env)',
+      ? 'Claude-Anbindung: aktiv (Rechnungs-PDFs werden zum Auslesen an die Anthropic-API übertragen)'
+      : 'Claude-Anbindung: inaktiv (kein ANTHROPIC_API_KEY in der .env) – die App ist ohne Claude nicht funktionsfähig',
   )
   if (!existsSync(distDir)) {
     console.log('Hinweis: Der Ordner dist/ fehlt. Bitte zuerst "npm run build" ausführen.')

@@ -14,11 +14,8 @@
   },
   "dependencies": {
     "exceljs": "^4.4.0",
-    "mammoth": "^1.12.1",
-    "pdfjs-dist": "^6.2.108",
     "react": "^19.2.8",
-    "react-dom": "^19.2.8",
-    "tesseract.js": "^7.0.0"
+    "react-dom": "^19.2.8"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",

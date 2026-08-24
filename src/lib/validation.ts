@@ -19,12 +19,12 @@ export function validateInvoice(
 ): { issues: ValidationIssue[]; positions: InvoicePosition[] } {
   const issues: ValidationIssue[] = []
 
-  if (invoice.extractionFailed) {
+  if (invoice.ai?.status === 'fehler') {
     issues.push(
       makeIssue(
         'extraction',
         'error',
-        `„${invoice.fileName}“ konnte nicht ausreichend gelesen werden (auch nicht per OCR) – manuelle Prüfung erforderlich.`,
+        `„${invoice.fileName}“ konnte von Claude nicht gelesen werden: ${invoice.ai.error ?? 'unbekannter Fehler'}. Bitte erneut versuchen.`,
       ),
     )
   }
@@ -53,36 +53,61 @@ export function validateInvoice(
     )
   }
 
-  if (!invoice.hasFontInfo && !invoice.extractionFailed) {
-    issues.push(
-      makeIssue(
-        'fontInfo',
-        'error',
-        'In dieser PDF ist kein Fettdruck erkennbar (z. B. nach Texterkennung). Positionsnummern, Mengen und die Rechnungsnummer können deshalb nicht sicher gelesen werden – bitte alle Positionen prüfen und bestätigen.',
-      ),
-    )
+  // Das Bestimmungsland (Spalte F) gilt nur für Ausgangsrechnungen – bei
+  // Eingangsrechnungen entfällt Spalte F vollständig (siehe excelTemplate.ts).
+  if (invoice.richtung === 'V') {
+    if (!invoice.destinationCountry?.code) {
+      issues.push(
+        makeIssue(
+          'destinationCountry',
+          'error',
+          'Das Bestimmungsland wurde nicht eindeutig bestimmt. Bitte manuell auswählen – die Auswahl wird für diese Adresse gespeichert.',
+        ),
+      )
+    } else if (invoice.destinationCountry.needsConfirmation && !invoice.destinationCountry.isManual) {
+      issues.push(
+        makeIssue(
+          'destinationCountry',
+          'error',
+          `Vorschlag für das Bestimmungsland: „${invoice.destinationCountry.code}“ (nicht aus der Lieferadresse ableitbar). Bitte bestätigen oder korrigieren – die Entscheidung wird für diese Adresse gespeichert.`,
+        ),
+      )
+    } else if (invoice.destinationCountry.source === 'vat-id-override') {
+      issues.push(
+        makeIssue(
+          'destinationCountry',
+          'warning',
+          `Das Bestimmungsland wurde anhand der USt-IdNr. auf „${invoice.destinationCountry.code}“ korrigiert (Lieferadresse deutete auf „${invoice.destinationCountry.overriddenAddressCode ?? '—'}“ hin).`,
+        ),
+      )
+    }
   }
 
-  if (!invoice.destinationCountry?.code) {
-    issues.push(
-      makeIssue(
-        'destinationCountry',
-        'error',
-        'Das Bestimmungsland wurde nicht eindeutig bestimmt. Bitte manuell auswählen – die Auswahl wird für diese Adresse gespeichert.',
-      ),
-    )
-  } else if (invoice.destinationCountry.needsConfirmation && !invoice.destinationCountry.isManual) {
-    issues.push(
-      makeIssue(
-        'destinationCountry',
-        'error',
-        `Vorschlag für das Bestimmungsland: „${invoice.destinationCountry.code}“ (nicht aus der Lieferadresse ableitbar). Bitte bestätigen oder korrigieren – die Entscheidung wird für diese Adresse gespeichert.`,
-      ),
-    )
-  }
-
-  if (!invoice.vatId) {
+  // Spalte P (USt-IdNr.) entfällt bei Eingangsrechnungen vollständig (siehe
+  // excelTemplate.ts) und wird deshalb auch nur für Ausgangsrechnungen geprüft.
+  if (invoice.richtung === 'V' && !invoice.vatId) {
     issues.push(makeIssue('vatId', 'error', 'Die USt-IdNr. des Warenempfängers wurde nicht erkannt.'))
+  }
+
+  if (invoice.richtung === 'E') {
+    // G (fest "09") und H (entfällt) sind bei Eingangsrechnungen fest
+    // vorbelegt bzw. nicht mehr relevant und werden daher nicht mehr geprüft.
+    const columnChecks: Array<{ field: keyof Invoice; label: string; column: string }> = [
+      { field: 'versendungsMitgliedstaat', label: 'Versendungsmitgliedstaat', column: 'E' },
+      { field: 'ursprungsland', label: 'Ursprungsland', column: 'I' },
+    ]
+    for (const check of columnChecks) {
+      const value = invoice[check.field]
+      if (!value || (typeof value === 'string' && value.trim().length === 0)) {
+        issues.push(
+          makeIssue(
+            check.field as string,
+            'error',
+            `${check.label} (Spalte ${check.column}) konnte nicht aus der Rechnung gelesen werden. Bitte manuell eintragen.`,
+          ),
+        )
+      }
+    }
   }
 
   if (invoice.netWeightTotal == null) {
@@ -99,51 +124,37 @@ export function validateInvoice(
     issues.push(makeIssue('positions', 'error', 'Es wurden keine Rechnungspositionen erkannt.'))
   }
 
-  if (invoice.ai?.status === 'fehler') {
-    issues.push(
-      makeIssue(
-        'ai',
-        'warning',
-        `Die KI-Zweitmeinung ist fehlgeschlagen: ${invoice.ai.error ?? 'unbekannter Fehler'}. Die regelbasierte Erkennung gilt unverändert.`,
-      ),
-    )
-  }
-
-  for (const discrepancy of invoice.ai?.discrepancies ?? []) {
-    if (discrepancy.resolved) continue
-    issues.push(
-      makeIssue(
-        `ai:${discrepancy.id}`,
-        'error',
-        `Abweichung zur KI-Zweitmeinung bei „${discrepancy.label}“: erkannt „${discrepancy.ownValue}“, KI liest „${discrepancy.aiValue}“. Bitte entscheiden.`,
-      ),
-    )
-  }
-
-  for (const field of invoice.ai?.uncertainFields ?? []) {
-    issues.push(
-      makeIssue(
-        `ai-uncertain:${field}`,
-        'warning',
-        `Die KI hat das Feld „${field}“ als unsicher gemeldet – bitte besonders prüfen.`,
-      ),
-    )
-  }
-
   const updatedPositions = invoice.positions.map((position) => validatePosition(position))
 
-  const relevantPositions = updatedPositions.filter((p) => !p.isCreditOrDiscountOrNegative)
+  const relevantPositions = updatedPositions.filter(
+    (p) => !p.isCreditOrDiscountOrNegative && !p.isTransportCost && !p.isMtzSurcharge,
+  )
   if (invoice.netWeightTotal != null && relevantPositions.length > 0) {
     const calculatedSum = relevantPositions.reduce((sum, p) => sum + (p.calculatedWeightKgRounded ?? 0), 0)
     const difference = calculatedSum - invoice.netWeightTotal
-    if (Math.abs(difference) > 0) {
-      issues.push(
-        makeIssue(
-          'weightSum',
-          'error',
-          `Die berechnete Eigenmasse beträgt ${calculatedSum} kg, auf der Rechnung stehen ${invoice.netWeightTotal} kg (Differenz ${difference} kg). Bitte Zuordnung/Werte prüfen.`,
-        ),
-      )
+    // Abweichungen von 1-2 kg gelten als unkritisch und sperren den Export
+    // nicht – es wird bewusst KEINE Meldung erzeugt, stattdessen zeigt die
+    // Prüfansicht direkt am Dokumentnamen das Badge "Toleranz < 2 kg" (siehe
+    // ReviewTable.tsx). Erst darüber wird eine Bestätigung verlangt.
+    const withinAutoTolerance = Math.abs(difference) > 0 && Math.abs(difference) <= 2
+    if (Math.abs(difference) > 0 && !withinAutoTolerance) {
+      if (invoice.weightToleranceAccepted) {
+        issues.push(
+          makeIssue(
+            'weightSum',
+            'warning',
+            `Differenz zwischen berechneter Eigenmasse (${calculatedSum} kg) und Rechnung (${invoice.netWeightTotal} kg) von ${difference} kg – Toleranz manuell bestätigt.`,
+          ),
+        )
+      } else {
+        issues.push(
+          makeIssue(
+            'weightSum',
+            'error',
+            `Die berechnete Eigenmasse beträgt ${calculatedSum} kg, auf der Rechnung stehen ${invoice.netWeightTotal} kg (Differenz ${difference} kg). Bitte Zuordnung/Werte prüfen oder Toleranz bestätigen.`,
+          ),
+        )
+      }
     }
   }
 
@@ -163,6 +174,13 @@ export function validateInvoice(
 }
 
 function validatePosition(position: InvoicePosition): InvoicePosition {
+  // "09"-Positionen (Frachtkosten, sonstige Zuschläge, zugerechnete
+  // Materialteuerungszuschläge) werden nicht als eigene Intrastat-Zeile
+  // gemeldet und deshalb auch nicht wie normale Warenpositionen validiert.
+  if (position.isTransportCost || position.isMtzSurcharge) {
+    return { ...position, issues: [], status: 'ok' }
+  }
+
   const issues: ValidationIssue[] = []
 
   if (!position.customsCode) {
@@ -209,7 +227,7 @@ function validatePosition(position: InvoicePosition): InvoicePosition {
         makeIssue(
           `position-${position.id}-product`,
           'error',
-          `Für Produkt „${position.productNameRaw}“ wurde keine sichere Zuordnung in der Gewichtsliste gefunden. Bitte manuell zuordnen.`,
+          `Für Artikel „${position.articleNumberRaw ?? position.productNameRaw}“ wurde kein Gewicht gefunden. Bitte manuell eintragen.`,
         ),
       )
     }

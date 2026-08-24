@@ -1,125 +1,14 @@
+import type { DestinationCountryInfo } from '../types'
+
 /**
- * Auflösung von Länderangaben in Rechnungsadressen zu ISO-3166-1-Alpha-2-Codes.
+ * Länder-Hilfsfunktionen für die Intrastat-Meldung.
  *
- * In den Adressen werden die klassischen Länder-Kennzeichen als Präfix vor der
- * Postleitzahl verwendet (z. B. "A-1010 Wien", "B-1000 Brüssel",
- * "D-70173 Stuttgart"). Diese ein- bis dreibuchstabigen Kennzeichen sind NICHT
- * identisch mit den ISO-Codes und werden hier explizit übersetzt.
- *
- * Grundsatz: Ist die Zuordnung nicht eindeutig, wird `null` geliefert – es darf
- * kein Ländercode geraten werden (Anforderung Abschnitt 6).
+ * Das Bestimmungsland selbst liest Claude direkt aus der Rechnung (siehe
+ * `aiInvoiceBuilder.ts`) und liefert bereits den ISO-3166-1-Alpha-2-Code.
+ * Diese Datei stellt nur noch die Anzeige-Namen für die manuelle Auswahl in
+ * der Prüfansicht sowie den fachlich vorgeschriebenen Abgleich mit der
+ * USt-IdNr. des Warenempfängers bereit.
  */
-
-/** Klassische Länder-Kennzeichen (Kfz-Kennzeichen) → ISO-3166-1-Alpha-2. */
-const VEHICLE_CODE_TO_ISO: Record<string, string> = {
-  A: 'AT',
-  B: 'BE',
-  BG: 'BG',
-  CH: 'CH',
-  CY: 'CY',
-  CZ: 'CZ',
-  D: 'DE',
-  DK: 'DK',
-  E: 'ES',
-  EE: 'EE',
-  EST: 'EE',
-  F: 'FR',
-  FI: 'FI',
-  FIN: 'FI',
-  GB: 'GB',
-  GR: 'GR',
-  H: 'HU',
-  HR: 'HR',
-  I: 'IT',
-  IRL: 'IE',
-  IE: 'IE',
-  L: 'LU',
-  LT: 'LT',
-  LV: 'LV',
-  M: 'MT',
-  MT: 'MT',
-  N: 'NO',
-  NL: 'NL',
-  P: 'PT',
-  PL: 'PL',
-  RO: 'RO',
-  S: 'SE',
-  SE: 'SE',
-  SK: 'SK',
-  SLO: 'SI',
-  SI: 'SI',
-}
-
-/** Ländernamen (deutsch und englisch) → ISO-3166-1-Alpha-2. */
-const COUNTRY_NAME_TO_CODE: Record<string, string> = {
-  belgien: 'BE',
-  belgium: 'BE',
-  bulgarien: 'BG',
-  bulgaria: 'BG',
-  daenemark: 'DK',
-  dänemark: 'DK',
-  denmark: 'DK',
-  deutschland: 'DE',
-  germany: 'DE',
-  estland: 'EE',
-  estonia: 'EE',
-  finnland: 'FI',
-  finland: 'FI',
-  frankreich: 'FR',
-  france: 'FR',
-  griechenland: 'GR',
-  greece: 'GR',
-  irland: 'IE',
-  ireland: 'IE',
-  italien: 'IT',
-  italy: 'IT',
-  italia: 'IT',
-  kroatien: 'HR',
-  croatia: 'HR',
-  lettland: 'LV',
-  latvia: 'LV',
-  litauen: 'LT',
-  lithuania: 'LT',
-  luxemburg: 'LU',
-  luxembourg: 'LU',
-  malta: 'MT',
-  niederlande: 'NL',
-  netherlands: 'NL',
-  oesterreich: 'AT',
-  österreich: 'AT',
-  austria: 'AT',
-  polen: 'PL',
-  poland: 'PL',
-  portugal: 'PT',
-  rumaenien: 'RO',
-  rumänien: 'RO',
-  romania: 'RO',
-  schweden: 'SE',
-  sweden: 'SE',
-  schweiz: 'CH',
-  switzerland: 'CH',
-  slowakei: 'SK',
-  slovakia: 'SK',
-  slowenien: 'SI',
-  slovenia: 'SI',
-  spanien: 'ES',
-  spain: 'ES',
-  tschechien: 'CZ',
-  'tschechische republik': 'CZ',
-  'czech republic': 'CZ',
-  czechia: 'CZ',
-  ungarn: 'HU',
-  hungary: 'HU',
-  zypern: 'CY',
-  cyprus: 'CY',
-  'vereinigtes koenigreich': 'GB',
-  'vereinigtes königreich': 'GB',
-  grossbritannien: 'GB',
-  großbritannien: 'GB',
-  'united kingdom': 'GB',
-  norwegen: 'NO',
-  norway: 'NO',
-}
 
 const VALID_ISO_CODES = new Set([
   'AT', 'BE', 'BG', 'CH', 'CY', 'CZ', 'DE', 'DK', 'EE', 'ES', 'FI', 'FR', 'GB',
@@ -161,89 +50,51 @@ const DISPLAY_NAME_BY_CODE: Record<string, string> = {
   SK: 'Slowakei',
 }
 
-function normalize(name: string): string {
-  return name.trim().toLowerCase().replace(/\s+/g, ' ').replace(/[.,]/g, '')
+/**
+ * Länderpräfix der USt-IdNr. → ISO-3166-1-Alpha-2. Weicht an wenigen Stellen
+ * vom sonst identischen ISO-Code ab (Griechenland: "EL", Nordirland: "XI").
+ */
+const VAT_PREFIX_TO_ISO: Record<string, string> = {
+  EL: 'GR',
+  XI: 'GB',
 }
 
 /**
- * Löst ein einzelnes Länder-Token auf: ein Länder-Kennzeichen ("A", "B", "D"),
- * einen ISO-Code oder einen Ländernamen. `null`, wenn nicht eindeutig.
+ * Löst das Länderkürzel aus dem Präfix einer USt-IdNr. auf (z. B. "BE" aus
+ * "BE0123456789"). Liefert `null`, wenn kein gültiges Präfix erkennbar ist.
  */
-export function resolveCountryToken(token: string | undefined | null): string | null {
-  if (!token) return null
-  const trimmed = token.trim().replace(/[.,;:]+$/, '')
-  if (trimmed === '') return null
-
-  const upper = trimmed.toUpperCase()
-
-  // Länder-Kennzeichen (A, B, D, NL, SLO, …) – hat Vorrang, da in den
-  // Adressen genau diese Schreibweise verwendet wird.
-  if (/^[A-Z]{1,3}$/.test(upper) && VEHICLE_CODE_TO_ISO[upper]) {
-    return VEHICLE_CODE_TO_ISO[upper]
-  }
-
-  // Bereits gültiger ISO-Code
-  if (/^[A-Z]{2}$/.test(upper) && VALID_ISO_CODES.has(upper)) {
-    return upper
-  }
-
-  // Ländername
-  return COUNTRY_NAME_TO_CODE[normalize(trimmed)] ?? null
-}
-
-/** Rückwärtskompatible Bezeichnung (wird an mehreren Stellen verwendet). */
-export const resolveCountryCode = resolveCountryToken
-
-export type AddressCountryDetection = {
-  /** Aufgelöster ISO-Code oder null, wenn keine eindeutige Zuordnung möglich ist. */
-  code: string | null
-  /** Das im Adresstext gefundene Token (z. B. "A", "B", "Belgien"), falls vorhanden. */
-  token: string | null
-  /** Woraus das Token stammt – nur zur Nachvollziehbarkeit in der Prüfansicht. */
-  source: 'plz-praefix' | 'landname' | 'iso-code' | 'kein-token'
+export function resolveCountryFromVatId(vatId: string | undefined | null): string | null {
+  if (!vatId) return null
+  const match = vatId.trim().toUpperCase().match(/^([A-Z]{2})/)
+  if (!match) return null
+  const prefix = match[1]
+  if (VAT_PREFIX_TO_ISO[prefix]) return VAT_PREFIX_TO_ISO[prefix]
+  return VALID_ISO_CODES.has(prefix) ? prefix : null
 }
 
 /**
- * Ermittelt aus einem Adressblock das Bestimmungsland.
- *
- * Erkennungsreihenfolge:
- *  1. Länder-Kennzeichen vor der Postleitzahl, z. B. "A-1010 Wien"
- *  2. ausgeschriebener Ländername in einer eigenen Zeile
- *  3. alleinstehender ISO-Code in einer eigenen Zeile
+ * Gleicht das von Claude gelesene Bestimmungsland mit dem Länderpräfix der
+ * USt-IdNr. des Warenempfängers ab. Das Länderkürzel muss zur USt-IdNr.
+ * passen – bei einer Abweichung sticht die USt-IdNr. das gelesene
+ * Bestimmungsland aus. Eine bereits manuell bestätigte Auswahl wird nicht
+ * automatisch überschrieben.
  */
-export function detectCountryFromAddress(block: string | undefined | null): AddressCountryDetection {
-  if (!block) return { code: null, token: null, source: 'kein-token' }
+export function crosscheckDestinationCountryWithVatId(
+  destinationCountry: DestinationCountryInfo | undefined,
+  vatId: string | undefined,
+): DestinationCountryInfo | undefined {
+  if (!destinationCountry || destinationCountry.isManual) return destinationCountry
 
-  const lines = block
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0)
+  const vatCountry = resolveCountryFromVatId(vatId)
+  if (!vatCountry || vatCountry === destinationCountry.code) return destinationCountry
 
-  // 1. Länder-Kennzeichen vor der Postleitzahl: "A-1010 Wien", "NL- 1234 AB"
-  for (const line of lines) {
-    const match = line.match(/(?:^|\s)([A-Za-z]{1,3})\s*-\s*(\d{4,6})\b/)
-    if (match) {
-      const token = match[1].toUpperCase()
-      const code = VEHICLE_CODE_TO_ISO[token] ?? null
-      return { code, token, source: 'plz-praefix' }
-    }
+  return {
+    ...destinationCountry,
+    code: vatCountry,
+    source: 'vat-id-override',
+    needsConfirmation: false,
+    overriddenAddressCode: destinationCountry.code,
   }
-
-  // 2. Ausgeschriebener Ländername (eigene Zeile)
-  for (const line of lines) {
-    const code = COUNTRY_NAME_TO_CODE[normalize(line)]
-    if (code) return { code, token: line, source: 'landname' }
-  }
-
-  // 3. Alleinstehender ISO-Code in eigener Zeile
-  for (const line of lines) {
-    const upper = line.toUpperCase()
-    if (/^[A-Z]{2}$/.test(upper) && VALID_ISO_CODES.has(upper)) {
-      return { code: upper, token: line, source: 'iso-code' }
-    }
-  }
-
-  return { code: null, token: null, source: 'kein-token' }
 }
 
 export function listKnownCountries(): { name: string; code: string }[] {

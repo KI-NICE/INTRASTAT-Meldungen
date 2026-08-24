@@ -1,11 +1,12 @@
-import type { AiInvoiceFields } from '../types'
+import type { AiInvoiceFields, InvoiceDirection } from '../types'
 
 /**
- * Anbindung an den lokalen Proxy-Server für die KI-Zweitmeinung.
+ * Anbindung an den lokalen Proxy-Server, über den Claude die Rechnungs-PDFs
+ * liest. Claude ist die einzige Quelle der Rechnungsdaten – es gibt keine
+ * eigene, deterministische PDF-Auswertung mehr.
  *
  * Der API-Key liegt ausschließlich auf dem Server (`.env`). Die App kennt ihn
- * nicht. Ohne laufenden Proxy ist die Funktion einfach nicht verfügbar; die
- * übrige Verarbeitung bleibt vollständig lokal.
+ * nicht. Ohne laufenden Proxy ist die App nicht funktionsfähig.
  */
 
 /**
@@ -50,26 +51,26 @@ async function fileToBase64(file: File): Promise<string> {
   return btoa(binary)
 }
 
-export type AiVerifyResult = { model: string; fields: AiInvoiceFields }
+export type AiReadResult = { model: string; fields: AiInvoiceFields }
 
 /**
- * Sendet die PDF an den lokalen Proxy und erhält die von der KI gelesenen
- * Felder zurück. ACHTUNG: Hierbei wird die vollständige Rechnung an die
- * Anthropic-API übertragen – der Aufruf erfolgt nur nach ausdrücklicher
- * Aktivierung durch die Nutzerin bzw. den Nutzer.
+ * Sendet die vollständige Rechnungs-PDF an den lokalen Proxy und erhält die
+ * von Claude gelesenen Felder zurück. Diese Felder sind die alleinige
+ * Grundlage der weiteren Verarbeitung (Produktzuordnung, Berechnungen,
+ * Export) – es findet kein Abgleich mit einer eigenen Lesung mehr statt.
  */
-export async function verifyInvoiceWithAi(file: File): Promise<AiVerifyResult> {
+export async function readInvoiceWithAi(file: File, richtung: InvoiceDirection): Promise<AiReadResult> {
   const pdfBase64 = await fileToBase64(file)
 
   const response = await fetch(apiUrl('/api/verify'), {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ fileName: file.name, pdfBase64 }),
+    body: JSON.stringify({ fileName: file.name, pdfBase64, richtung }),
   })
 
   const body = await response.json().catch(() => ({}))
   if (!response.ok) {
-    throw new Error((body as { error?: string }).error ?? `Prüfung fehlgeschlagen (HTTP ${response.status})`)
+    throw new Error((body as { error?: string }).error ?? `Auslesen fehlgeschlagen (HTTP ${response.status})`)
   }
 
   const result = body as { model?: string; fields?: AiInvoiceFields }

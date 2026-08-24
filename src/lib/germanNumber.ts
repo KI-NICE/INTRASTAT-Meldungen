@@ -81,3 +81,9 @@ export function roundUp(value: number): number {
 export function roundCommercial(value: number): number {
   return Math.round(value)
 }
+
+/** Formatiert ein Datum als "TT.MM.JJJJ" (z. B. für den Datenstand hinterlegter Dateien). */
+export function formatGermanDate(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${pad(date.getDate())}.${pad(date.getMonth() + 1)}.${date.getFullYear()}`
+}

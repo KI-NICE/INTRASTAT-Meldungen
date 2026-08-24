@@ -2,10 +2,21 @@
   box-sizing: border-box;
 }
 
+:root {
+  --brand: #bc1e23;
+  --brand-dark: #8f1519;
+  --brand-tint: #fdecec;
+  --brand-border: #f3c6c6;
+  --accent: #bc1e23;
+  --accent-dark: #8f1519;
+  --accent-tint: #fdecec;
+  --accent-text: #ffffff;
+}
+
 body {
   margin: 0;
   font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
-  background: #f6f7f9;
+  background: #f2f2f2;
   color: #1a1a1a;
   font-size: 15px;
 }
@@ -13,17 +24,78 @@ body {
 .app {
   max-width: 1400px;
   margin: 0 auto;
-  padding: 20px;
+  padding-bottom: 40px;
+}
+
+/* --------------------------------------------------------------------- Kopf */
+
+.app__header {
+  background: white;
+  border: 1px solid #ddd;
+  border-radius: 16px;
+  margin: 12px 12px 0;
+  padding: 22px 20px;
+  text-align: center;
+}
+
+.app__logo {
+  display: block;
+  height: 40px;
+  margin: 0 auto 14px;
+}
+
+/* Eingefärbte Kläger-Group-Bildmarke (nach Firmenwahl) – dieselbe Schwarz-Datei
+   dient per CSS-Maske als Formvorlage, die Füllfarbe kommt von background-color. */
+.app__logo--mask {
+  aspect-ratio: 2378 / 336;
+  width: auto;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  mask-mode: alpha;
 }
 
 .app__header h1 {
-  margin: 0 0 4px;
-  font-size: 1.45rem;
+  margin: 0 0 8px;
+  font-size: 1.75rem;
+  color: var(--brand);
+}
+
+.app__header--select h1 {
+  color: #000;
 }
 
 .app__header p {
-  color: #555;
+  color: #666;
   margin: 0;
+  font-size: 1rem;
+}
+
+.app__body {
+  padding: 20px;
+}
+
+/* -------------------------------------------------------------- Fußzeile */
+
+.app__version-footer {
+  position: fixed;
+  left: 10px;
+  bottom: 6px;
+  font-size: 0.7rem;
+  color: #94a3b8;
+  background: rgba(255, 255, 255, 0.85);
+  padding: 2px 8px;
+  border-radius: 6px;
+  z-index: 10;
+}
+
+.back-to-menu-row {
+  display: flex;
+  justify-content: flex-end;
+  margin: 12px 0 0;
 }
 
 /* --------------------------------------------------- hinterlegte Grunddaten */
@@ -31,14 +103,97 @@ body {
 .bundled-info {
   margin: 16px 0;
   padding: 12px 16px;
-  background: #eef2ff;
-  border: 1px solid #c7d2fe;
+  background: var(--brand-tint);
+  border: 1px solid var(--brand-border);
   border-radius: 8px;
   font-size: 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Je eine Zeile für AR-Gewichtsliste, ER-Gewichtsliste und Mustertabelle. */
+.bundled-info__row {
   display: flex;
   flex-wrap: wrap;
   gap: 8px 24px;
   align-items: center;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--brand-border);
+}
+
+.bundled-info__row:last-of-type {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.bundled-info__status .stand {
+  font-weight: 700;
+  color: var(--brand);
+}
+
+.bundled-info__status {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.bundled-info__status p {
+  margin: 0;
+}
+
+.bundled-info__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.bundled-info__actions .bundled-info__button-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.bundled-info__actions .bundled-info__button-stack button:first-child {
+  font-weight: 700;
+}
+
+.bundled-info__panel {
+  flex-basis: 100%;
+  background: white;
+  border: 1px solid #c7d2fe;
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+
+.weightlist-view {
+  max-height: 260px;
+  overflow: auto;
+  margin-top: 6px;
+}
+
+.weightlist-view table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.8rem;
+}
+
+.weightlist-view th,
+.weightlist-view td {
+  border: 1px solid #e2e8f0;
+  padding: 4px 7px;
+  text-align: left;
+}
+
+.weightlist-history {
+  list-style: none;
+  padding: 0;
+  margin: 6px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .bundled-info details {
@@ -47,7 +202,7 @@ body {
 
 .bundled-info summary {
   cursor: pointer;
-  color: #4338ca;
+  color: #5f5f5f;
 }
 
 .bundled-info__advanced {
@@ -62,34 +217,37 @@ body {
 
 .step-nav {
   display: flex;
+  justify-content: center;
   list-style: none;
-  padding: 0;
-  margin: 16px 0;
-  gap: 8px;
+  padding: 20px 15px;
+  margin: 0 0 16px;
+  gap: 10px;
   flex-wrap: wrap;
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
 .step-nav__button {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 12px;
-  border-radius: 999px;
-  border: none;
-  background: #e5e7eb;
-  font-size: 0.85rem;
-  color: inherit;
+  font-weight: 700;
 }
 
 .step-nav__item--active .step-nav__button {
-  background: #2563eb;
-  color: white;
+  background: var(--accent);
+  color: var(--accent-text);
 }
 
 .step-nav__item--done .step-nav__button {
-  background: #16a34a;
-  color: white;
+  border-color: #16a34a;
+  color: #16a34a;
   cursor: pointer;
+}
+
+.step-nav__item--done .step-nav__button:hover {
+  background: #f0fdf4;
 }
 
 .step-nav__button:disabled {
@@ -105,12 +263,145 @@ body {
   background: white;
   border-radius: 12px;
   padding: 20px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+}
+
+/* ----------------------------------------------------- Firmenauswahl */
+
+.company-panels {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 420px;
+  margin: 0 auto;
+}
+
+.company-panel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: white;
+  border: 2px solid #ccc;
+  border-radius: 12px;
+  padding: 24px 20px;
+  cursor: pointer;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.06);
+  transition:
+    background 0.2s,
+    transform 0.2s;
+}
+
+.company-panel img {
+  display: block;
+  height: 84px;
+  width: auto;
+  max-width: 100%;
+}
+
+.company-panel--spc {
+  border-color: #005a69;
+}
+
+/* Zwei Klassen nötig, damit dies nicht vom generischen "button:hover" (siehe
+   Formularfelder weiter unten) überstimmt wird – dessen ":not(:disabled)"
+   zählt trotz Typselektor als zusätzliche Pseudoklassen-Spezifität. */
+.company-panel.company-panel--spc:hover {
+  background: #e8f2f3;
+  transform: translateY(-2px);
+}
+
+.company-panel--st {
+  border-color: #ae0f0a;
+}
+
+.company-panel.company-panel--st:hover {
+  background: #fbebea;
+  transform: translateY(-2px);
+}
+
+.change-company-row {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 16px;
+}
+
+/* --------------------------------------------------- Richtungsauswahl */
+
+.direction-panels {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+}
+
+.direction-panel {
+  background: white;
+  border: 2px solid var(--accent);
+  border-radius: 12px;
+  padding: 28px 20px;
+  text-align: center;
+  cursor: pointer;
+  font: inherit;
+  color: var(--accent);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.06);
+  transition:
+    background 0.2s,
+    transform 0.2s;
+}
+
+.direction-panel:hover {
+  background: var(--accent-tint);
+  transform: translateY(-2px);
+}
+
+.direction-panel h3 {
+  margin: 0 0 8px;
+  font-size: 1.3rem;
+}
+
+.direction-panel p {
+  margin: 0;
+  color: #666;
+  font-size: 0.9rem;
+}
+
+.direction-panel--done {
+  border-style: dashed;
+  opacity: 0.85;
 }
 
 .app__main h2 {
   margin-top: 0;
   font-size: 1.15rem;
+}
+
+.step-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.step-header h2 {
+  margin: 0;
+}
+
+/* Steht ein Button allein im Kasten (kein h2 daneben), hält ihn dieser Zug
+   trotzdem rechtsbündig statt am Zeilenanfang. */
+.step-header button {
+  margin-left: auto;
+}
+
+.direction-heading {
+  display: block;
+  width: 100%;
+  margin: 12px 0 16px;
+  padding: 10px 24px;
+  border-radius: 12px;
+  background: var(--brand);
+  color: white;
+  font-size: 1.4rem;
+  font-weight: 700;
+  text-align: center;
 }
 
 .inline-fields {
@@ -189,12 +480,48 @@ body {
 
 /* -------------------------------------------------------------- Prüfansicht */
 
+.review__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.review__search {
+  flex: 1;
+  background: #f2f2f2;
+}
+
+.review__hidden-toggle {
+  flex-shrink: 0;
+  padding: 4px 12px;
+  border-width: 1px;
+  font-size: 0.82rem;
+  background: #c0c0c0;
+  border-color: #c0c0c0;
+  color: #333;
+}
+
+.review__hidden-toggle:not(:disabled):hover {
+  background: #a8a8a8;
+  border-color: #a8a8a8;
+  transform: none;
+}
+
+.invoice-card-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
 .invoice-card {
+  flex: 1;
+  min-width: 0;
   border: 1px solid #e2e8f0;
   border-left: 4px solid #94a3b8;
   border-radius: 8px;
   padding: 14px;
-  margin-bottom: 20px;
   background: #fff;
 }
 
@@ -210,6 +537,57 @@ body {
   border-left-color: #dc2626;
 }
 
+/* Zugeklappte Rechnung: rundum in der Statusfarbe umrahmt statt nur am
+   linken Rand, damit der Status auch ohne Details auf einen Blick erkennbar
+   bleibt. */
+.invoice-card--collapsed {
+  border: 2px solid transparent;
+  border-radius: 10px;
+  padding: 10px 14px;
+}
+
+.invoice-card--collapsed.invoice-card--ok {
+  border-color: #16a34a;
+}
+
+.invoice-card--collapsed.invoice-card--warning {
+  border-color: #eab308;
+}
+
+.invoice-card--collapsed.invoice-card--error {
+  border-color: #dc2626;
+}
+
+.invoice-card__toggle {
+  flex-shrink: 0;
+  margin-top: 14px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.invoice-card__toggle:not(:disabled):hover {
+  background: transparent;
+  transform: none;
+}
+
+.invoice-card__triangle {
+  display: block;
+  width: 0;
+  height: 0;
+  border-left: 7px solid transparent;
+  border-right: 7px solid transparent;
+}
+
+.invoice-card__triangle--up {
+  border-bottom: 11px solid var(--brand);
+}
+
+.invoice-card__triangle--down {
+  border-top: 11px solid #5f5f5f;
+}
+
 .invoice-card__header {
   display: flex;
   justify-content: space-between;
@@ -217,9 +595,23 @@ body {
   gap: 12px;
 }
 
+.invoice-card__header--collapsed {
+  align-items: center;
+}
+
 .invoice-card__header h3 {
   margin: 0 0 4px;
   font-size: 1rem;
+}
+
+.invoice-card__header--collapsed h3 {
+  margin: 0;
+}
+
+.remove-invoice {
+  flex-shrink: 0;
+  color: #dc2626;
+  border-color: #dc2626;
 }
 
 .invoice-meta {
@@ -263,6 +655,10 @@ body {
 
 .hint--error {
   color: #b91c1c;
+}
+
+.hint--warning {
+  color: #b45309;
 }
 
 .raw-text {
@@ -316,6 +712,11 @@ body {
 
 .row--warning {
   background: #fffbeb;
+}
+
+.row--transport {
+  background: #f1f5f9;
+  color: #64748b;
 }
 
 .badge {
@@ -387,19 +788,41 @@ body {
   padding: 3px 8px;
 }
 
-.product-mapping-cell {
-  white-space: normal;
-  min-width: 200px;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
 .product-input {
   width: 220px;
   font-family: inherit;
   font-size: 0.78rem;
   resize: vertical;
+}
+
+.manual-weight-entry__form {
+  min-width: 140px;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.manual-weight-entry__form input {
+  width: 80px;
+}
+
+.manual-weight-entry__form button {
+  width: 80px;
+  padding: 4px 6px;
+  font-size: 0.78rem;
+  font-weight: 400;
+  text-align: left;
+  border-radius: 4px;
+  background: #5f5f5f;
+  border-color: #5f5f5f;
+  color: white;
+}
+
+.manual-weight-entry__form button:not(:disabled):hover {
+  background: #4a4a4a;
+  border-color: #4a4a4a;
+  transform: none;
 }
 
 .number-input {
@@ -411,15 +834,43 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-.export-summary ul {
-  list-style: none;
-  padding: 0;
+.export-summary__columns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 32px;
+  margin-bottom: 16px;
 }
 
-.export-summary li {
-  padding: 4px 0;
+.export-summary__column-title {
+  text-decoration: underline;
+  color: var(--brand);
+  font-size: 1rem;
+  margin: 0 0 8px;
+}
+
+.export-summary__table {
+  border-collapse: collapse;
+  margin-bottom: 16px;
+}
+
+.export-summary__columns .export-summary__table {
+  margin-bottom: 0;
+}
+
+.export-summary__table th,
+.export-summary__table td {
+  padding: 6px 16px 6px 0;
   border-bottom: 1px solid #f1f5f9;
-  max-width: 420px;
+  text-align: left;
+  font-weight: 400;
+}
+
+.export-summary__table th {
+  color: #475569;
+}
+
+.export-summary__table td {
+  font-weight: 600;
 }
 
 .export-summary__blocked {
@@ -435,12 +886,18 @@ body {
 
 button {
   cursor: pointer;
-  border: 1px solid #cbd5e1;
+  border: 2px solid var(--accent);
   background: white;
-  border-radius: 6px;
-  padding: 7px 13px;
+  color: var(--accent);
+  border-radius: 25px;
+  padding: 10px 18px;
   font-size: 0.85rem;
+  font-weight: 400;
   font-family: inherit;
+  transition:
+    background 0.2s,
+    color 0.2s,
+    transform 0.2s;
 }
 
 button:disabled {
@@ -449,7 +906,20 @@ button:disabled {
 }
 
 button:not(:disabled):hover {
-  background: #f1f5f9;
+  background: var(--accent-tint);
+  transform: translateY(-1px);
+}
+
+/** Buttons, die dauerhaft wie der aktive Schritt im Step-Nav aussehen sollen. */
+.button--primary-solid {
+  background: var(--accent);
+  color: var(--accent-text);
+  font-weight: 700;
+}
+
+.button--primary-solid:not(:disabled):hover {
+  background: var(--accent-dark);
+  transform: none;
 }
 
 select,
@@ -466,8 +936,25 @@ input:not([type]) {
 }
 
 @media (max-width: 760px) {
-  .app {
+  .app__body {
     padding: 12px;
+  }
+  .app__header {
+    padding: 16px 14px;
+  }
+  .app__logo {
+    height: 32px;
+  }
+  .app__header h1 {
+    font-size: 1.4rem;
+  }
+  .step-nav {
+    gap: 7px;
+    padding: 15px 10px;
+  }
+  .step-nav__button {
+    padding: 9px 13px;
+    font-size: 0.78rem;
   }
   .invoice-meta {
     grid-template-columns: 1fr;
@@ -485,18 +972,6 @@ input:not([type]) {
   max-width: 460px;
 }
 
-.ai-bar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  margin-bottom: 16px;
-  padding: 10px 12px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-}
-
 .ai-panel {
   margin: 12px 0;
   padding: 10px 12px;
@@ -504,11 +979,6 @@ input:not([type]) {
   border: 1px solid #c7d2fe;
   background: #eef2ff;
   font-size: 0.85rem;
-}
-
-.ai-panel--ok {
-  border-color: #bbf7d0;
-  background: #f0fdf4;
 }
 
 .ai-panel--open {
@@ -524,39 +994,12 @@ input:not([type]) {
   gap: 2px;
 }
 
-.ai-panel__head {
-  display: flex;
-  gap: 10px;
-  align-items: baseline;
-  flex-wrap: wrap;
-  margin-bottom: 6px;
-}
-
-.ai-diff {
-  border-top: 1px solid rgba(0, 0, 0, 0.08);
-  padding: 8px 0 6px;
-}
-
-.ai-diff__label {
-  font-weight: 600;
-}
-
-.ai-diff__values {
-  display: flex;
-  gap: 20px;
-  flex-wrap: wrap;
-  margin: 2px 0 6px;
-}
-
-.ai-diff__actions {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-.ai-diff__actions button {
-  font-size: 0.78rem;
-  padding: 3px 9px;
+.ai-blocked {
+  padding: 16px 20px;
+  border-radius: 8px;
+  border: 1px solid #fecaca;
+  background: #fef2f2;
+  max-width: 640px;
 }
 
 .confirm-suggestion {

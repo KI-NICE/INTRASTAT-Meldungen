@@ -1,5 +1,5 @@
 import type { Invoice } from '../types'
-import { buildExportRow } from '../lib/excelTemplate'
+import { buildExportRow, getExportablePositions } from '../lib/excelTemplate'
 
 const COLUMN_LABELS = [
   'A Richtung',
@@ -20,12 +20,17 @@ const COLUMN_LABELS = [
   'P USt-IdNr.',
 ]
 
-/** Zeigt exakt die Daten, die später in die Mustertabelle exportiert werden (Spalten A–P). */
+/**
+ * Zeigt die Daten, die später in die Mustertabelle exportiert werden
+ * (Spalten A–P) – je Rechnung nach Warennummer sortiert. Anders als der
+ * tatsächliche Export zeigt diese Vorschau bewusst JEDE Position einzeln
+ * (keine Zusammenfassung gleicher Warennummern), damit Fehler pro Position
+ * erkennbar bleiben; im Excel-Export werden Positionen einer Rechnung mit
+ * derselben Warennummer zu einer Zeile zusammengefasst.
+ */
 export function PreviewTable({ invoices }: { invoices: Invoice[] }) {
   const rows = invoices.flatMap((invoice) =>
-    invoice.positions
-      .filter((p) => !p.isCreditOrDiscountOrNegative)
-      .map((position) => ({ position, row: buildExportRow(invoice, position) })),
+    getExportablePositions(invoice).map((position) => ({ position, row: buildExportRow(invoice, position) })),
   )
 
   if (rows.length === 0) {
@@ -52,23 +57,22 @@ export function PreviewTable({ invoices }: { invoices: Invoice[] }) {
               <td>{row.versendungsMitgliedstaat || '—'}</td>
               <td>{row.bestimmungsMitgliedstaat || '—'}</td>
               <td>{row.bestimmungsBundesland || '—'}</td>
-              <td>{row.ursprungsBundesland}</td>
+              <td>{row.ursprungsBundesland || '—'}</td>
               <td>{row.ursprungsland}</td>
               <td>{row.warennummer}</td>
               <td>{row.warenbezeichnung || '—'}</td>
               <td>{row.eigenmasseKg}</td>
               <td>{row.besondereMasseinheit === '' ? '—' : row.besondereMasseinheit}</td>
               <td>{row.rechnungsbetragEur}</td>
-              <td>{row.statistischerWertEur}</td>
-              <td>{row.vatId}</td>
+              <td>{row.statistischerWertEur === '' ? '—' : row.statistischerWertEur}</td>
+              <td>{row.vatId || '—'}</td>
             </tr>
           ))}
         </tbody>
       </table>
       <p className="preview-note">
-        Quelle je Zeile: {rows.length} Zeile(n) aus {invoices.length} Rechnung(en) – interne Hilfsdaten (z. B.
-        Produktzuordnung, Konfidenzwerte) sind hier bewusst nicht enthalten und erscheinen auch nicht in der
-        exportierten Excel-Datei.
+        Positionen einer Rechnung mit derselben Warennummer werden hier bewusst einzeln angezeigt; in der
+        exportierten Excel-Datei werden sie zu einer Zeile zusammengefasst.
       </p>
     </div>
   )

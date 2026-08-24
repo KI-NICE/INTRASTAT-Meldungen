@@ -1,10 +1,11 @@
 # Intrastat-Meldungs-App
 
 Eine deutschsprachige Web-App zur Erstellung von Intrastat-Meldungen aus
-PDF-Rechnungen. Die gesamte Verarbeitung – PDF-Auslesen, OCR-Fallback,
-Gewichtszuordnung, Excel-Erstellung – läuft ausschließlich lokal im Browser.
-Es werden keine Rechnungs-, Gewichts- oder Excel-Daten an einen Server
-übertragen.
+PDF-Rechnungen. **Claude (Anthropic) liest jede Rechnung vollständig aus und
+ist die alleinige Quelle der Rechnungsdaten** – es gibt kein lokales,
+deterministisches Auslesen und kein Fallback ohne Claude. Alle übrigen
+Schritte (Gewichtszuordnung, Berechnungen, Excel-Erstellung) laufen
+ausschließlich lokal im Browser.
 
 ## Fest hinterlegte Grunddaten
 
@@ -18,7 +19,7 @@ hochgeladen werden:
 
 Ändert sich die Gewichtsliste dauerhaft, wird `src/data/gewichtsliste.ts`
 angepasst und die App neu gebaut. Für einen einmaligen Test lässt sich die
-Liste unter „Erweitert“ vorübergehend durch eine DOCX-Datei ersetzen; diese
+Liste unter „Erweitert" vorübergehend durch eine DOCX-Datei ersetzen; diese
 Ersetzung gilt nur bis zum Neuladen der Seite.
 
 ## Bedienung
@@ -27,95 +28,110 @@ Ersetzung gilt nur bis zum Neuladen der Seite.
    zweistellige Monatszahl ausgegeben; das Jahr dient der Plausibilitätsprüfung
    und dem Dateinamen.
 2. **PDF-Rechnungen hochladen** – Mehrfachauswahl oder Drag & Drop.
-3. **Analyse starten** – Text-/OCR-Extraktion, Feld- und Positionserkennung,
-   Produktzuordnung, Berechnungen und Validierung laufen automatisch.
-4. **Prüfen und korrigieren** – je Rechnung eine Karte mit allen erkannten
-   Kopfdaten und einer Positionstabelle. Jeder erkannte Wert ist editierbar;
-   manuelle Änderungen werden gelb hervorgehoben. Über „Rohtext anzeigen“ lässt
-   sich der aus der PDF gelesene Text einsehen, falls ein Feld nicht erkannt
-   wurde.
+3. **Analyse starten** – jede Rechnung wird vollständig an Claude übertragen;
+   Claude liest Kopf- und Positionsdaten aus. Anschließend laufen
+   Produktzuordnung, Berechnungen und Validierung automatisch und lokal.
+4. **Prüfen und korrigieren** – je Rechnung eine Karte mit allen von Claude
+   gelesenen Kopfdaten und einer Positionstabelle. Jeder Wert ist editierbar;
+   manuelle Änderungen werden gelb hervorgehoben. Meldet Claude selbst
+   Unsicherheit zu einem Feld, erscheint das als Hinweis.
 5. **Vorschau** – zeigt exakt die Daten, die exportiert werden (Spalten A–P).
 6. **Export** – nach Prüfung der Zusammenfassung wird `MM-JJJJ.xlsx`
    heruntergeladen. Der Export ist erst möglich, wenn keine ungeklärten Fehler
    mehr vorliegen.
 
-## Erkennungsregeln (fachlich bestätigt)
+Ist der lokale Claude-Proxy nicht erreichbar (kein API-Key, Proxy nicht
+gestartet), zeigt die App von Anfang an nur einen Blockbildschirm – ohne
+Claude ist keine Analyse möglich.
 
-Die Rechnungen werden nicht nur als Text, sondern mit **Fettdruck und
-Spaltenpositionen** ausgewertet – ohne diese Information sind Positionsnummer,
-Menge und Rechnungsnummer nicht eindeutig bestimmbar (Preise stehen "per 100").
-Ist in einer PDF kein Fettdruck erkennbar (z. B. nach OCR), wird die Rechnung
-gesperrt und muss vollständig manuell geprüft werden.
+## Was Claude ausliest (fachlich vorgegeben)
+
+Claude erhält die vollständige Rechnungs-PDF und liest sie anhand fest
+vorgegebener Regeln aus (siehe `SYSTEM_PROMPT` in `server/index.mjs`).
+Unsicher gelesene Felder werden von Claude selbst als solche gekennzeichnet
+und in der Prüfansicht als Hinweis angezeigt – es wird nichts geraten.
 
 | Feld | Fundstelle in der Rechnung |
 | --- | --- |
 | Rechnungsnummer | Oben rechts **fett** neben der Überschrift `RECHNUNG` bzw. `INVOICE`. |
 | Rechnungsdatum / Bezugsmonat | Feld `vom:` (deutsch) bzw. `dated:` (englisch). Felder mit anderem Bezug – `Ihr Auftrag vom:`, `your order dated:`, `Bestellung vom:`, `Lieferschein vom:` – werden ausdrücklich ignoriert. |
-| Position | Linksbündige, **fette** Ganzzahl (`10`, `20`, …). Rechts davon beginnt die Artikelbezeichnung; sie wird über die Folgezeilen der Bezeichnungsspalte fortgesetzt. |
-| Menge | Ausschließlich die **fett** gesetzte Zahl (`1000 Stück`, `252 Stück`, englisch `200 pcs`). Nicht-fette Zahlen wie der Preis pro 100 werden nie als Menge gelesen. |
-| Positionsbetrag | Wert in der Betragsspalte – die Spalte wird über die x-Position der Kopfzeile bestimmt (`Betrag` deutsch, `Dly.date` englisch), nicht über den Zahlenwert. Datumswerte werden ausgeschlossen. |
-| Bestimmungsland (Spalte F) | Länderkennzeichen vor der Postleitzahl der **Lieferadresse**, ersatzweise der **Auftragsadresse**: `A` → `AT`, `B` → `BE`, `D` → `DE`, `F` → `FR`, `I` → `IT`, `E` → `ES`, `L` → `LU`, `S` → `SE`, `H` → `HU`, `P` → `PT`, `SLO` → `SI` usw. |
-| Netto-Gesamtgewicht | Fußzeile hinter der Sternchen-Trennlinie, beschriftet mit `Net weight:` oder `Netto:`. Ein Netto-*Betrag* in EUR wird nicht damit verwechselt. |
-| Warennummer (Spalte J) | Feld `Zolltarif-Nr.:` / `Zolltarif-Nr..:` bzw. englisch `Customs tariff no.:` / `Commodity code`, als Text gespeichert. |
-| USt-IdNr. (Spalte P) | Feld `Ihre USt-IdNr.:` bzw. `Your VAT-ID:`, Leerzeichen werden entfernt. |
-| Eigenmasse (Spalte L) | Einzelgewicht × Menge, je Position auf volle kg **aufgerundet**. |
+| Position | Linksbündige, **fette** Ganzzahl (`10`, `20`, …). Rechts davon beginnt die Artikelbezeichnung. |
+| Menge | Ausschließlich die **fett** gesetzte Zahl (`1000 Stück`, `252 Stück`, englisch `200 pcs`). Preise pro 100 werden nie als Menge gelesen. |
+| Positionsbetrag | Wert in der Betragsspalte (`Betrag` deutsch, `Dly.date` englisch). |
+| Bestimmungsland (Spalte F) | Länderkennzeichen vor der Postleitzahl der **Lieferadresse**, ersatzweise der **Auftragsadresse**, als ISO-3166-1-Alpha-2-Code (`A`→`AT`, `B`→`BE`, `D`→`DE`, `F`→`FR`, `I`→`IT`, `E`→`ES`, `L`→`LU`, `S`→`SE`, `H`→`HU`, `P`→`PT`, `SLO`→`SI` usw.). Claude gibt zusätzlich die verwendete Adresse als Text zurück, damit Korrekturen adressgenau gespeichert werden können. |
+| Netto-Gesamtgewicht | Fußzeile hinter der Sternchen-Trennlinie, beschriftet mit `Net weight:` oder `Netto:`. |
+| Warennummer (Spalte J) | Feld `Zolltarif-Nr.:` bzw. `Customs tariff no.:`, als Text gespeichert. |
+| USt-IdNr. (Spalte P) | Feld `Ihre USt-IdNr.:` bzw. `Your VAT-ID:`, ohne Leerzeichen. |
+| Eigenmasse (Spalte L) | Einzelgewicht (Gewichtsliste bzw. aus der Beschreibung) × Menge, je Position auf volle kg **aufgerundet**. |
 | Besondere Maßeinheit (Spalte M) | Nur bei Warennummer `39233010`, Menge als ganze Stückzahl. |
 | Rechnungsbetrag (Spalte N) | Positionsbetrag, Frachtkosten anteilig nach Wertanteil aufgeschlagen, auf volle EUR aufgerundet. |
 | Statistischer Wert (Spalte O) | Positionswert + anteiliger 4-%-Zuschlag (= 104 %), auf volle EUR aufgerundet. |
 
 Feste Werte: A = `V`, C = `11`, D = `3`, H = `09`, I = `DE`; E, G und K bleiben leer.
 
-Englische Rechnungen werden automatisch erkannt (Auswertung der
-Feldbezeichnungen) und mit den englischen Beschriftungen gelesen.
+Englische Rechnungen werden von Claude automatisch erkannt.
+
+### Frachtkosten-Positionen (Artikelnummer 090025)
+
+Steht in einer Position unter der Spaltenüberschrift „Artikelangaben" bzw.
+„Part description" fett die Artikelnummer `090025` über der eigentlichen
+Bezeichnung, erkennt Claude dies als reine Frachtkosten-/Transportkosten-Zeile.
+Diese Position wird **nicht** als eigene Intrastat-Zeile gemeldet; ihr Betrag
+wird wie ausgewiesene Frachtkosten anteilig nach Wertanteil auf die übrigen
+Positionen der Rechnung verteilt.
 
 ## Zuordnungen und Lernverhalten
 
-**Produkte.** Gewicht aus der Produktbeschreibung → exakter Treffer →
-normalisierter Treffer → zuvor manuell bestätigte Zuordnung → eindeutiger
-Treffer über den Bezeichnungsanfang. Bleibt es unklar, verlangt die App eine
-Auswahl und übernimmt nichts automatisch.
+**Produkte.** Gewicht aus der Produktbeschreibung → gelernte Zuordnung über
+die Artikelnummer → gelernte Zuordnung über die Produktbezeichnung → exakter
+Treffer → normalisierter Treffer → eindeutiger Treffer über den
+Bezeichnungsanfang. Bleibt es unklar, verlangt die App eine Auswahl und
+übernimmt nichts automatisch.
 
 - **Flaschenartikel** (`Zyl.`, `Zylinderflasche`, `Zylk.`, `FL`, `VK`,
   `Vierkant`) tragen das Artikelgewicht in der Beschreibung selbst, z. B.
   `Gew.:20 g`. Dieses Gewicht wird direkt verwendet und **nicht** über die
-  Gewichtsliste ermittelt. Die Prüfansicht weist das ausdrücklich aus.
+  Gewichtsliste ermittelt.
 - **Fortfolgende Bezeichnungen** werden über einen tokenweisen Abgleich des
-  Bezeichnungsanfangs aufgelöst: „DPZ Hobby 1,0 L natur mit Deckel“ →
-  „DPZ Hobby 1.0L“ (330 g), „Sprayer K2 rot mit Kappe 28/410“ →
-  „Sprayer K2“ (50 g). Schreibweisen wie `1,0 L` und `1.0L` gelten dabei als
-  gleich. Der längste passende Eintrag gewinnt, damit
-  „DPZ Profi 1,5 L C+ blau“ nicht auf „DPZ Profi 1.5L“ fällt; der tokenweise
-  Vergleich verhindert, dass „Sprayer K20“ als „Sprayer K2“ gilt.
-- Manuell bestätigte Produktzuordnungen werden dauerhaft gespeichert und sofort
-  auf alle gleichlautenden Positionen des Durchlaufs angewendet.
+  Bezeichnungsanfangs aufgelöst: „DPZ Hobby 1,0 L natur mit Deckel" →
+  „DPZ Hobby 1.0L" (330 g). Ausgeschriebenes „Druckpumpzerstäuber" wird dabei
+  wie „DPZ" behandelt. Der längste passende Eintrag gewinnt.
+- **Manuelle Gewichtseingabe.** Findet sich kein Treffer – oder ist der Wert
+  in der hinterlegten Gewichtsliste veraltet bzw. abweichend –, lässt sich in
+  der Prüfansicht ein Gewicht je Stück direkt eintragen, statt nur aus der
+  Gewichtsliste zu wählen. Diese Korrektur wird dauerhaft gespeichert: sowohl
+  über die fett gesetzte **Artikelnummer** der Position (zuverlässiger, da
+  unabhängig von Schreibweise-Varianten) als auch über die Produktbezeichnung.
+  Beide Zuordnungen werden sofort auf alle passenden Positionen des aktuellen
+  Durchlaufs angewendet und schlagen bei künftigen Läufen automatisch zu –
+  die Hilfsliste wächst dadurch mit jeder Korrektur, und es wird zunehmend
+  weniger manuelle Prüfung nötig.
 
-**Länder – mitdenkendes Mapping.** Ist das Bestimmungsland nicht eindeutig aus
-der Lieferadresse ableitbar, schlägt die App das Land einer nachrangigen
-Adresse vor und markiert es als bestätigungspflichtig; ein Klick übernimmt den
-Vorschlag. Jede Bestätigung oder Korrektur wird **adressgenau** dauerhaft
-gemerkt und hat bei künftigen Läufen Vorrang vor der automatischen Erkennung –
-so lernt die App die Abweichungen einzelner Kunden, ohne sie fälschlich auf
-ein ganzes Länderkennzeichen zu verallgemeinern. Unbekannte Kennzeichen werden
-zusätzlich allgemein gemerkt.
+**Länder – mitdenkendes Mapping.** Das Bestimmungsland liest Claude direkt aus
+der Rechnung. Wird dieser Code manuell korrigiert, wird die Korrektur
+**adressgenau** (anhand der von Claude zurückgegebenen Adresse) dauerhaft
+gemerkt und hat bei künftigen Läufen Vorrang vor der Lesung durch Claude.
+
+**USt-IdNr. muss zum Bestimmungsland passen.** Weicht das Länderpräfix der
+USt-IdNr. des Warenempfängers vom von Claude gelesenen Bestimmungsland ab,
+sticht die USt-IdNr. das gelesene Land aus; die Abweichung wird als Hinweis
+angezeigt. Eine bereits manuell bestätigte Auswahl wird dadurch nicht
+überschrieben.
 
 Alle gelernten Zuordnungen liegen im `localStorage` des Browsers und lassen
-sich unter „Erweitert“ jederzeit löschen.
+sich unter „Erweitert" jederzeit löschen.
 
-## KI-Zweitmeinung (optional, standardmäßig aus)
+## Architektur: Claude als alleinige Quelle
 
-Zusätzlich zur regelbasierten Erkennung kann Claude jede Rechnung unabhängig
-auslesen. Abweichungen werden in der Prüfansicht gegenübergestellt und müssen
-entschieden werden – **die regelbasierte Erkennung bleibt maßgeblich, ein
-KI-Wert wird niemals automatisch übernommen.** Solange eine Abweichung offen
-ist, ist der Export gesperrt.
-
-### Datenschutz-Hinweis
-
-Bei aktivierter KI-Prüfung werden **vollständige Rechnungs-PDFs an die
-Anthropic-API übertragen**. Das weicht bewusst von der ursprünglichen Vorgabe
-„keine Übertragung an KI-Dienste“ ab. Die Funktion ist deshalb
-standardmäßig **aus** und muss in der App ausdrücklich eingeschaltet werden.
-Ohne Aktivierung verlässt keine Rechnung den Rechner.
+| Aspekt | Festlegung |
+|---|---|
+| Rolle | Claude liest jede Rechnung vollständig und verbindlich aus. Es gibt **keine** eigene, deterministische PDF-Auswertung mehr, gegen die abgeglichen werden könnte. |
+| Übertragene Daten | Die vollständige Rechnungs-PDF. |
+| Architektur | Lokaler Proxy (`server/index.mjs`), der den API-Key aus der `.env` liest und die gebaute App ausliefert. Der Key gelangt nie in das Browser-Bundle. |
+| Verfügbarkeit | **Zwingend erforderlich.** Ist der Proxy nicht erreichbar oder kein Key hinterlegt, zeigt die App nur einen Blockbildschirm – es gibt kein lokales Fallback. |
+| Modellwahl | Über `ANTHROPIC_MODEL` konfigurierbar; ohne Angabe wählt der Proxy das neueste verfügbare Sonnet-Modell des Kontos. |
+| Strukturierte Antwort | Erzwungener Werkzeugaufruf mit JSON-Schema, damit die Antwort maschinell weiterverarbeitet werden kann. Claude wird angewiesen, unsichere Felder auf `null` zu setzen und zu benennen, statt zu raten. |
+| Bei Lesefehlern | Schlägt das Auslesen einer einzelnen Rechnung fehl (z. B. Netzwerkfehler), bleibt nur diese Rechnung gesperrt; über „Erneut versuchen" lässt sie sich neu einlesen. |
 
 ### Einrichtung
 
@@ -129,25 +145,13 @@ npm start                 # baut die App und startet den Proxy
 # danach http://localhost:8787 öffnen
 ```
 
-Ohne Key startet der Server ebenfalls – die App läuft dann ohne KI-Prüfung.
-Im Entwicklungsmodus (`npm run dev` auf Port 5173) den Proxy separat mit
-`npm run server` starten und `VITE_AI_PROXY_URL=http://localhost:8787` setzen.
+Ohne Key startet der Server ebenfalls, die App bleibt dann aber im
+Blockbildschirm. Im Entwicklungsmodus (`npm run dev` auf Port 5173) den Proxy
+separat mit `npm run server` starten und `VITE_AI_PROXY_URL=http://localhost:8787`
+setzen.
 
 Das Modell wird automatisch bestimmt (neuestes verfügbares Sonnet-Modell des
 Kontos) und lässt sich über `ANTHROPIC_MODEL` in der `.env` festlegen.
-
-### Was geprüft wird
-
-Rechnungsnummer, Rechnungsdatum, USt-IdNr., Bestimmungsland,
-Netto-Gesamtgewicht, Frachtkosten sowie je Position Warennummer, Menge,
-Positionsbetrag, Produktbezeichnung, das Gewicht aus der Produktbeschreibung
-und ein Verdacht auf Gutschrift/Rabatt. Meldet die KI selbst Unsicherheit zu
-einem Feld, erscheint das als Warnung. Reine Schreibweisen-Unterschiede bei
-Produktbezeichnungen und Rundungsdifferenzen unter einem Cent gelten nicht als
-Abweichung.
-
-Auf GitHub Pages ist die KI-Prüfung nicht verfügbar (dort läuft kein Proxy);
-alle übrigen Funktionen arbeiten dort wie gewohnt.
 
 ## Installation und Entwicklung
 
@@ -155,42 +159,35 @@ Voraussetzung: Node.js ≥ 20.
 
 ```bash
 npm install
-npm run dev      # Entwicklungsserver
+npm run dev      # Entwicklungsserver (ohne Claude-Anbindung nur der Blockbildschirm)
 npm run build    # Produktions-Build nach dist/
 npm run preview  # Vorschau des Builds
 npm test         # automatisierte Tests
-npm run server   # lokaler Proxy für die KI-Zweitmeinung (liefert auch dist/ aus)
+npm run server   # lokaler Proxy (liefert auch dist/ aus)
 npm start        # build + Proxy in einem Schritt
 ```
 
 ### Betrieb ohne Node.js
 
-Der Ordner `dist/` ist eine rein statische Anwendung und benötigt nur einen
-beliebigen lokalen Webserver (ein direkter Doppelklick auf `index.html`
-funktioniert nicht, da Browser Web Worker von `file://` blockieren):
-
-```bash
-python3 -m http.server 8080   # danach http://localhost:8080 öffnen
-```
-
-Unter Windows genügt PowerShell mit Bordmitteln – siehe `tools/serve.ps1`.
+Der Ordner `dist/` ist eine rein statische Anwendung, benötigt aber weiterhin
+den lokalen Proxy (`server/index.mjs`), damit Claude erreichbar ist – ein
+reiner statischer Webserver reicht nicht mehr aus, da es kein lokales
+Fallback gibt.
 
 ### Tests
 
-Die Testsuite (Vitest, 101 Tests) prüft unter anderem:
+Die Testsuite (Vitest) prüft unter anderem:
 
 - deutsche Zahlenformate und die Rundungsregeln für Gewicht und EUR,
-- Übersetzung der Länderkennzeichen, Adress-Priorität, Vorschlagslogik und das
-  Vorrangverhalten gelernter Zuordnungen,
+- Ableitung von Bezugsmonat/-jahr aus dem von Claude gelesenen Rechnungsdatum,
+- Aufbau der Rechnung aus den von Claude gelesenen Feldern (Warennummer,
+  Frachtkosten-Positionen über Artikelnummer 090025, Gutschrift-/Storno-Erkennung),
+- Bestimmungsland: gelernte Adress-Zuordnung vs. von Claude gelesener Code,
+  Abgleich mit dem Länderpräfix der USt-IdNr.,
 - Produktzuordnung inklusive Präfix-, Schreibweisen- und Abgrenzungsfällen
   sowie Gewicht aus der Produktbeschreibung (Flaschenartikel),
-- Positions- und Mengenerkennung über Fettdruck und Spaltenpositionen,
-  einschließlich der Abgrenzung zum Preis pro 100,
-- Erkennung von `vom:`/`dated:` gegenüber `Ihr Auftrag vom:`/`your order dated:`,
-- Netto-Gesamtgewicht aus der Fußzeile (inkl. Abgrenzung zum Netto-Betrag),
 - Gewichtssummen-Prüfung mit Toleranz 0 kg,
-- Struktur, Zelltypen und Spalte M der exportierten Excel-Datei,
-- Vergleich mit der KI-Zweitmeinung und die Übernahme einzelner KI-Werte.
+- Struktur, Zelltypen und Spalte M der exportierten Excel-Datei.
 
 Unter `e2e/` liegt zusätzlich ein optionales End-to-End-Skript, das den
 gesamten Ablauf mit synthetischen Testdaten durchspielt und eine echte
@@ -204,13 +201,15 @@ npm run build && npm run preview      # in einem zweiten Terminal
 node e2e/run.mjs
 ```
 
-Der Ablauf mit KI-Zweitmeinung lässt sich ohne echten API-Key und ohne
-Datenübertragung testen – `e2e/mock-anthropic.mjs` bildet die API nach:
+Da Claude jetzt immer erforderlich ist, braucht der Ablauf einen erreichbaren
+Proxy – entweder mit echtem API-Key oder mit der Nachbildung
+`e2e/mock-anthropic.mjs`, die ohne echten Key und ohne echte Rechnungsdaten
+auskommt:
 
 ```bash
 node e2e/mock-anthropic.mjs &
 ANTHROPIC_API_KEY=test ANTHROPIC_BASE_URL=http://127.0.0.1:8788 npm run server &
-E2E_AI=1 APP_URL=http://127.0.0.1:8787/ node e2e/run.mjs
+APP_URL=http://127.0.0.1:8787/ node e2e/run.mjs
 ```
 
 ## Deployment auf GitHub Pages
@@ -218,47 +217,34 @@ E2E_AI=1 APP_URL=http://127.0.0.1:8787/ node e2e/run.mjs
 Der Workflow `.github/workflows/deploy.yml` baut die App bei jedem Push auf
 `main` und veröffentlicht sie über GitHub Pages.
 
-1. Repository-Einstellungen → **Pages** → **Source**: „GitHub Actions“.
-2. Push auf `main` (oder Workflow manuell starten).
-3. Die App ist danach unter
-   `https://<benutzername>.github.io/<repository-name>/` erreichbar.
-
-Die Vite-Konfiguration nutzt einen relativen Basis-Pfad (`base: './'`), eine
-Anpassung an den Repository-Namen ist nicht nötig.
+**Wichtiger Hinweis:** Auf GitHub Pages läuft kein Proxy und damit keine
+Claude-Anbindung. Da Claude die alleinige Quelle der Rechnungsdaten ist, zeigt
+die auf GitHub Pages gehostete App nur den Blockbildschirm – eine Analyse ist
+dort nicht möglich. Der produktive Betrieb erfordert den lokalen Proxy
+(`npm start`).
 
 ## Datenschutz
 
-- Alle Verarbeitungsschritte laufen im Browser (JavaScript/WebAssembly).
-- Ohne die optionale KI-Zweitmeinung findet **keine** Übertragung von
-  Rechnungs-, Gewichts- oder Excel-Daten an externe Server statt.
-- Ist die KI-Zweitmeinung eingeschaltet, werden vollständige Rechnungs-PDFs an
-  die Anthropic-API übertragen (siehe eigener Abschnitt oben). Der API-Key
-  bleibt dabei ausschließlich auf dem lokalen Proxy.
+- Claude liest **jede** hochgeladene Rechnung vollständig aus – die
+  vollständige PDF wird dafür immer an die Anthropic-API übertragen. Es gibt
+  keine Möglichkeit, die App ohne diese Übertragung zu nutzen.
+- Alle übrigen Verarbeitungsschritte (Produktzuordnung, Berechnungen,
+  Excel-Erstellung) laufen im Browser; dabei werden keine zusätzlichen Daten
+  an Server übertragen.
+- Der Anthropic-API-Key bleibt ausschließlich auf dem lokalen Proxy
+  (`server/index.mjs`) und gelangt nie in das Browser-Bundle.
 - Dauerhaft gespeichert werden ausschließlich bestätigte Produkt- und
   Länder-Zuordnungen im `localStorage`. Rechnungsdaten selbst werden nicht
   dauerhaft gespeichert und gehen beim Neuladen der Seite verloren.
 
 ## Bekannte Einschränkungen
 
-- Die Erkennung von Position, Menge und Rechnungsnummer setzt **Fettdruck** in
-  der PDF voraus. Fehlt diese Information (z. B. bei gescannten Rechnungen über
-  OCR), sperrt die App die Rechnung und verlangt eine vollständige manuelle
-  Prüfung, statt Werte zu raten.
-- Die Betragsspalte wird über die x-Position der Kopfzeile bestimmt. In
-  englischen Rechnungen trägt sie laut Vorgabe die Beschriftung `Dly.date`;
-  weicht der Aufbau davon ab, kann der Positionsbetrag falsch zugeordnet
-  werden. Er ist in der Prüfansicht editierbar, und „Rohtext anzeigen“ zeigt
-  den gelesenen PDF-Text zur Diagnose.
-- Die Artikelbezeichnung wird aus der Bezeichnungsspalte rechts der
-  Positionsnummer zusammengesetzt. Bei stark abweichenden Layouts kann sie
-  unvollständig sein; sie ist editierbar, und eine Änderung löst die
-  Produktzuordnung sofort neu aus.
-- Es wird der `legacy`-Build von pdf.js verwendet. Der Standard-Build von
-  pdf.js 6 setzt sehr neue JavaScript-Methoden voraus
-  (`Map.prototype.getOrInsertComputed`), die aktuelle Browser noch nicht
-  mitbringen – damit schlagen Fettdruck-Erkennung und OCR-Rendering fehl.
-- OCR (Tesseract.js) greift nur, wenn eine PDF-Seite keinen ausreichenden
-  auslesbaren Text enthält.
+- Claude ist die alleinige Quelle der Rechnungsdaten. Ohne erreichbaren Proxy
+  mit gültigem API-Key ist die App nicht funktionsfähig – es gibt kein
+  lokales Fallback.
+- Die Erkennungsgenauigkeit hängt von Claudes Lesefähigkeit ab. Jeder Wert ist
+  in der Prüfansicht editierbar; meldet Claude selbst Unsicherheit zu einem
+  Feld, erscheint das als Hinweis.
 - Die Toleranz zwischen berechnetem und ausgewiesenem Netto-Gesamtgewicht ist
   fachlich auf **0 kg** festgelegt. Da jede Position einzeln aufgerundet wird,
   kann Rundungsdrift bei vielen Positionen zu gesperrten Rechnungen führen.
@@ -272,19 +258,18 @@ Anpassung an den Repository-Namen ist nicht nötig.
 
 ```
 src/
-  data/gewichtsliste.ts   fest hinterlegte Gewichtsliste
+  data/gewichtsliste.ts      fest hinterlegte Gewichtsliste
   assets/Mustertabelle.xlsx  fest hinterlegte Excel-Vorlage
-  lib/documentText.ts     Zeilen-/Fettdruck-Modell des PDF-Textes
-  lib/                    Kernlogik (Parsing, Berechnungen, Validierung, Export)
-  lib/__tests__/          automatisierte Tests
-  components/             UI-Komponenten
-  App.tsx                 Ablaufsteuerung und Zustandsverwaltung
-  types.ts                interne Datentypen (nie im Export sichtbar)
-public/standard_fonts     pdf.js-Schriftdaten (für die Fettdruck-Erkennung)
-public/cmaps              pdf.js-Zeichentabellen
-server/index.mjs          lokaler Proxy für die KI-Zweitmeinung (Key bleibt serverseitig)
-tools/serve.ps1           lokaler Webserver für Windows ohne Node.js
-e2e/                      optionales End-to-End-Skript inkl. API-Nachbildung
-.env.example              Vorlage für den API-Key (die .env wird nicht eingecheckt)
-.github/workflows/        GitHub Pages Deployment
+  lib/aiVerification.ts      Anbindung an den lokalen Claude-Proxy
+  lib/aiInvoiceBuilder.ts    baut das Rechnungsmodell aus den von Claude gelesenen Feldern
+  lib/                       Kernlogik (Produktzuordnung, Berechnungen, Validierung, Export)
+  lib/__tests__/             automatisierte Tests
+  components/                UI-Komponenten
+  App.tsx                    Ablaufsteuerung und Zustandsverwaltung
+  types.ts                   interne Datentypen (nie im Export sichtbar)
+server/index.mjs             lokaler Proxy zu Claude (Key bleibt serverseitig)
+tools/serve.ps1              lokaler Webserver für Windows ohne Node.js
+e2e/                         optionales End-to-End-Skript inkl. API-Nachbildung
+.env.example                 Vorlage für den API-Key (die .env wird nicht eingecheckt)
+.github/workflows/           GitHub Pages Deployment (ohne Claude-Anbindung, s. o.)
 ```

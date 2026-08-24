@@ -21,22 +21,20 @@ page.on('pageerror', (err) => console.log('[pageerror]', err.message))
 const baseUrl = process.env.APP_URL || 'http://localhost:4173/'
 await page.goto(baseUrl)
 
-console.log('--- HINTERLEGTE GRUNDDATEN ---')
-await page.waitForSelector('.bundled-info')
-await page.waitForTimeout(800)
-console.log(await page.locator('.bundled-info').innerText())
-
-// Optional: KI-Zweitmeinung aktivieren (E2E_AI=1)
-if (process.env.E2E_AI === '1') {
-  const checkbox = page.locator('.ai-toggle input[type=checkbox]')
-  await checkbox.waitFor()
-  if (await checkbox.isEnabled()) {
-    await checkbox.check()
-    console.log('KI-Zweitmeinung aktiviert')
-  } else {
-    console.log('KI-Zweitmeinung nicht verfuegbar (Proxy/Key fehlt)')
-  }
+// Claude ist die einzige Quelle der Rechnungsdaten – ohne erreichbaren Proxy
+// (echt oder per mock-anthropic.mjs nachgebildet) zeigt die App nur den
+// Blockbildschirm und der Test bricht hier sichtbar ab.
+await page.waitForSelector('.bundled-info, .ai-blocked', { timeout: 15000 })
+if (await page.locator('.ai-blocked').count() > 0) {
+  console.log('--- KEINE VERBINDUNG ZU CLAUDE ---')
+  console.log(await page.locator('.ai-blocked').innerText())
+  await browser.close()
+  process.exit(1)
 }
+
+console.log('--- HINTERLEGTE GRUNDDATEN ---')
+await page.waitForTimeout(300)
+console.log(await page.locator('.bundled-info').innerText())
 
 // Schritt 1: Bezugsmonat (Standard 08/2026 passt zur Beispielrechnung)
 await page.getByRole('button', { name: 'Weiter' }).click()
@@ -46,7 +44,7 @@ await page.locator('input[type=file]').last().setInputFiles([fx('rechnung-de.pdf
 await page.waitForTimeout(300)
 await page.getByRole('button', { name: 'Weiter' }).click()
 
-// Schritt 3: Analyse
+// Schritt 3: Analyse (Claude liest beide Rechnungen aus)
 await page.getByRole('button', { name: 'Analyse starten' }).click()
 await page.waitForSelector('text=4. Fehler und offene Zuordnungen bearbeiten', { timeout: 60000 })
 await page.waitForTimeout(500)
@@ -57,30 +55,10 @@ for (const meta of await page.locator('.invoice-meta').all()) console.log(await 
 console.log('--- PRUEFANSICHT: POSITIONEN ---')
 for (const t of await page.locator('.review-table').all()) console.log(await t.innerText(), '\n---')
 
-if (process.env.E2E_AI === '1') {
-  // Auf das Ende der KI-Pruefung warten
-  await page.waitForSelector('.ai-panel', { timeout: 120000 })
-  await page.waitForFunction(() => !document.body.innerText.includes('KI-Zweitmeinung laeuft'), null, {
-    timeout: 120000,
-  })
-  console.log('--- KI-ZWEITMEINUNG ---')
-  for (const panel of await page.locator('.ai-panel').all()) console.log(await panel.innerText(), '\n---')
-
-  // Offene Abweichungen entscheiden: erste uebernehmen, restliche eigenen Wert behalten
-  const applyButtons = page.getByRole('button', { name: 'KI-Wert uebernehmen' })
-  if ((await applyButtons.count()) > 0) {
-    console.log('Abweichung: KI-Wert wird uebernommen (Testfall)')
-    await applyButtons.first().click()
-    await page.waitForTimeout(300)
-  }
-  let keepButtons = page.getByRole('button', { name: 'Eigenen Wert behalten' })
-  while ((await keepButtons.count()) > 0) {
-    await keepButtons.first().click()
-    await page.waitForTimeout(200)
-    keepButtons = page.getByRole('button', { name: 'Eigenen Wert behalten' })
-  }
-  console.log('--- KI-ZWEITMEINUNG NACH ENTSCHEIDUNG ---')
-  for (const panel of await page.locator('.ai-panel').all()) console.log(await panel.innerText(), '\n---')
+const aiPanels = await page.locator('.ai-panel').all()
+if (aiPanels.length > 0) {
+  console.log('--- VON CLAUDE ALS UNSICHER GEMELDET / FEHLER ---')
+  for (const panel of aiPanels) console.log(await panel.innerText(), '\n---')
 }
 
 const issues = await page.locator('.invoice-card .issue').allInnerTexts()

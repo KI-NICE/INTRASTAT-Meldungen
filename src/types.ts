@@ -4,44 +4,40 @@
 // Excel-Datei.
 
 export type MatchType =
+  /** Treffer im hinterlegten Artikel-Gewichtsmapping (Artikelnummer). */
   | 'exact'
-  | 'normalized'
-  | 'prefix'
   /** Gewicht stand direkt in der Produktbeschreibung (z. B. "Gew.:20 g"). */
   | 'beschreibung'
   | 'manual'
-  | 'suggested'
   | 'none'
 
 /** Sprache der Rechnung – steuert die erwarteten Feldbezeichnungen. */
 export type InvoiceLanguage = 'de' | 'en'
 
-export type AddressKind = 'delivery' | 'order' | 'recipient'
+/** Richtung der Rechnung = Spalte A im Export: "V" (Ausgang) oder "E" (Eingang). */
+export type InvoiceDirection = 'V' | 'E'
 
-export type Address = {
-  kind: AddressKind
-  raw: string
-  /** Im Adressblock gefundenes Länder-Token, z. B. "A", "B" oder "Belgien". */
-  countryToken?: string
-  countryCode?: string
-}
+/**
+ * Firma, für die gerade eine Meldung erfasst wird (Kläger Spraying Technology
+ * bzw. Kläger Performance Components). Bestimmt Farbschema, Logo und
+ * Export-Dateinamen-Präfix (siehe COMPANY_THEME in App.tsx) sowie – da beide
+ * Firmen fachlich getrennte Artikel-Kataloge führen – eine eigene
+ * Gewichtsliste je Firma (siehe activeWeightMapStore.ts/weightListHistory.ts).
+ */
+export type Company = 'ST' | 'SPC'
 
 export type DestinationCountryInfo = {
   code: string | null
   /** Woraus der Code stammt – für die Nachvollziehbarkeit in der Prüfansicht. */
-  source:
-    | 'delivery'
-    | 'order'
-    | 'recipient'
-    | 'gelernte-zuordnung'
-    | 'gespeichertes-mapping'
-    | 'manual'
-    | 'unresolved'
+  source: 'ai' | 'gelernte-zuordnung' | 'manual' | 'vat-id-override' | 'unresolved'
   isManual: boolean
-  /** Token, unter dem eine manuelle Zuordnung dauerhaft gespeichert wird. */
-  token?: string | null
   /** true, solange ein Vorschlag noch bestätigt werden muss. */
   needsConfirmation?: boolean
+  /**
+   * Von Claude gelesenes Länderkürzel, bevor der Abgleich mit der USt-IdNr.
+   * es ggf. überschrieben hat (nur zur Nachvollziehbarkeit).
+   */
+  overriddenAddressCode?: string | null
 }
 
 export type ManualCorrection = {
@@ -85,11 +81,35 @@ export type InvoicePosition = {
   quantityRaw?: string
   quantity?: number
   amountRaw?: string
-  amountEur?: number // Positionsbetrag laut Rechnung, nach Zahlenformat-Parsing
+  amountEur?: number // Positionsbetrag laut Rechnung, von Claude gelesen
   isSpecialUnit: boolean // Warennummer 39233010
+  /**
+   * Fett gesetzte Artikelnummer unter „Artikelangaben“/„Part description“,
+   * über der Artikel-Bezeichnung (z. B. „090025“ für Frachtkosten).
+   */
+  articleNumberRaw?: string
+  /**
+   * Artikelnummer beginnt mit „09" (Frachtkosten, sonstige Zuschläge). Wird
+   * nicht als eigene Intrastat-Zeile gemeldet, wiegt nie etwas; ihr Betrag
+   * wird anteilig nach Wertanteil auf die übrigen Positionen der Rechnung
+   * verteilt (Spalte N). Materialteuerungszuschlag-Positionen mit erkannter
+   * zugehöriger Artikelposition fallen NICHT hierunter (siehe `isMtzSurcharge`).
+   */
+  isTransportCost: boolean
+  /**
+   * Materialteuerungszuschlag-Position, die einer vorangehenden
+   * Artikelposition direkt zugerechnet wurde (siehe
+   * `aiInvoiceBuilder.classifyNonMerchandisePositions`). Wird ebenfalls nicht
+   * als eigene Intrastat-Zeile gemeldet und wiegt nichts.
+   */
+  isMtzSurcharge: boolean
+  /** Betrag eines zugerechneten Materialteuerungszuschlags (nur an der Artikelposition gesetzt, zur Nachvollziehbarkeit). */
+  mtzSurchargeEurRaw?: number
   isCreditOrDiscountOrNegative: boolean
   negativeReason?: string
   negativeDecisionMade?: boolean // true, sobald der Nutzer Gutschrift/Storno/Rabatt manuell entschieden hat
+  /** true bei über „Position hinzufügen" manuell angelegten Positionen. */
+  isManualEntry?: boolean
 
   productMatch?: ProductMatch
   calculatedWeightKgRaw?: number
@@ -112,13 +132,12 @@ export type InvoiceStatus = 'pending' | 'analyzing' | 'ok' | 'warning' | 'error'
 export type Invoice = {
   id: string
   fileName: string
-  rawText: string
-  ocrUsed: boolean
-  extractionFailed: boolean
-  /** false, wenn kein Fettdruck erkennbar war (z. B. nach OCR). */
-  hasFontInfo: boolean
+  /** Ausgangs- oder Eingangsrechnung – bestimmt Spalte A im Export ("V"/"E"). */
+  richtung: InvoiceDirection
+  /** true bei vollständig manuell erfassten Rechnungen (kein Claude-Auslesen). */
+  isManualEntry?: boolean
 
-  /** Erkannte Rechnungssprache (deutsche oder englische Feldbezeichnungen). */
+  /** Von Claude erkannte Rechnungssprache. */
   language: InvoiceLanguage
   /** Rechnungsnummer – oben rechts fett neben "RECHNUNG" bzw. "INVOICE". */
   invoiceNumber?: string
@@ -127,22 +146,33 @@ export type Invoice = {
   referenceMonth?: string // MM, aus dem Rechnungsdatum abgeleitet
   referenceYear?: string // JJJJ, aus dem Rechnungsdatum abgeleitet (intern, für Plausibilität)
 
-  recipient?: Address
-  /** Auftragsadresse – Rückfallebene, wenn keine Lieferadresse angegeben ist. */
-  orderAddress?: Address
-  deliveryAddress?: Address
-  /** Adresse, die tatsächlich für das Bestimmungsland verwendet wurde. */
-  usedAddress?: Address
   destinationCountry?: DestinationCountryInfo
+  /**
+   * Die für das Bestimmungsland verwendete Adresse als Text, wie von Claude
+   * wiedergegeben. Dient zur Anzeige und als Schlüssel für adressgenau
+   * gemerkte manuelle Korrekturen.
+   */
+  destinationAddressText?: string
+  /** Welche Adresse laut Claude verwendet wurde (Lieferadresse/Auftragsadresse/Empfängeradresse/Versandanschrift). */
+  destinationAddressKind?: 'lieferadresse' | 'auftragsadresse' | 'empfaengeradresse' | 'versandanschrift'
 
-  vatIdRaw?: string
   vatId?: string // bereinigt (ohne Leerzeichen)
 
-  netWeightTotalRaw?: string
+  /**
+   * Spalten E, G, H, I der Mustertabelle.
+   * Ausgangsrechnungen: E/G immer leer, H fest "09", I fest "DE".
+   * Eingangsrechnungen: F, H und O entfallen vollständig (siehe
+   * `excelTemplate.buildExportRow`); G ist fest "09" (das eigene
+   * Bundesland als Bestimmungsbundesland). Nur E und I werden von Claude
+   * gelesen, sofern auf der Rechnung erkennbar – sonst leer und in der
+   * Prüfansicht manuell einzutragen.
+   */
+  versendungsMitgliedstaat?: string // Spalte E
+  bestimmungsBundesland?: string // Spalte G
+  ursprungsBundesland?: string // Spalte H
+  ursprungsland?: string // Spalte I
+
   netWeightTotal?: number // kg laut Rechnung
-  goodsValueTotalRaw?: string
-  goodsValueTotal?: number // EUR, Summe Positionswerte laut Rechnung
-  freightCostRaw?: string
   freightCost?: number
 
   positions: InvoicePosition[]
@@ -150,27 +180,47 @@ export type Invoice = {
   calculatedWeightSumRaw?: number
   calculatedWeightSumRounded?: number
   weightDifferenceKg?: number
+  /**
+   * Nutzer hat eine von 0 kg abweichende Differenz zwischen berechnetem und
+   * ausgewiesenem Gewicht ausdrücklich akzeptiert ("Toleranz bestätigen").
+   * Ändert keine Artikelgewichte oder sonstigen Regeln, hebt nur die
+   * Export-Sperre für diese Differenz auf.
+   */
+  weightToleranceAccepted?: boolean
 
   manualCorrections: ManualCorrection[]
   issues: ValidationIssue[]
   status: InvoiceStatus
 
-  /** Ergebnis der optionalen KI-Zweitmeinung. */
-  ai?: AiVerification
+  /** Ergebnis des Auslesens durch Claude (einzige Quelle der Rechnungsdaten). */
+  ai?: AiExtractionInfo
 }
 
 export type ManualProductMapping = Record<string, ProductWeightEntry>
 
-/* ------------------------------------------------ KI-Zweitmeinung (optional) */
+/* -------------------------------------------------- Auslesen durch Claude */
 
-/** Von der KI gelesene Felder – dienen ausschließlich dem Gegenlesen. */
+/** Von Claude aus der Rechnungs-PDF gelesene Felder. */
 export type AiInvoiceFields = {
   language?: 'de' | 'en' | null
   invoiceNumber?: string | null
   invoiceDate?: string | null
   vatId?: string | null
   destinationCountryCode?: string | null
-  destinationAddressUsed?: string | null
+  destinationAddressUsed?: 'lieferadresse' | 'auftragsadresse' | 'empfaengeradresse' | 'versandanschrift' | null
+  /** Die für das Bestimmungsland verwendete Adresse als Text (Zeilen durch "\n" getrennt). */
+  destinationAddressText?: string | null
+  /**
+   * Nur bei Eingangsrechnungen relevant (Spalte E): ISO-3166-1-Alpha-2-Code
+   * des Landes, aus dem die Ware tatsächlich versendet wurde
+   * (Lieferantenadresse). Bei Ausgangsrechnungen immer null.
+   */
+  versendungsmitgliedstaatCode?: string | null
+  /**
+   * Nur bei Eingangsrechnungen relevant (Spalte I): tatsächliches
+   * Ursprungsland der Ware (kann vom Versandland abweichen), sofern erkennbar.
+   */
+  ursprungslandCode?: string | null
   netWeightTotalKg?: number | null
   freightCostEur?: number | null
   positions?: {
@@ -181,26 +231,18 @@ export type AiInvoiceFields = {
     amountEur?: number | null
     weightPerPieceGrams?: number | null
     isCreditOrDiscount?: boolean | null
+    /**
+     * Fett gesetzte Artikelnummer unter „Artikelangaben“/„Part description“,
+     * über der Artikel-Bezeichnung (z. B. „090025“ für Frachtkosten). Sonst null.
+     */
+    articleNumber?: string | null
   }[]
   uncertainFields?: string[]
 }
 
-export type AiDiscrepancy = {
-  id: string
-  /** Technisches Feld, z. B. "vatId" oder "position:<id>:quantity". */
-  field: string
-  label: string
-  ownValue: string
-  aiValue: string
-  resolved: boolean
-  resolution?: 'own' | 'ai'
-}
-
-export type AiVerification = {
-  status: 'ausstehend' | 'laeuft' | 'fertig' | 'fehler'
+export type AiExtractionInfo = {
+  status: 'fertig' | 'fehler'
   model?: string
-  fields?: AiInvoiceFields
-  discrepancies: AiDiscrepancy[]
   uncertainFields: string[]
   error?: string
 }

@@ -106,10 +106,17 @@ export function referenceMonthMatches(
 
 export function summarizeInvoices(invoices: Invoice[]) {
   const processedInvoices = invoices.length
-  const rows = invoices.flatMap((inv) => inv.positions.filter((p) => !p.isCreditOrDiscountOrNegative))
+  const rows = invoices.flatMap((inv) =>
+    inv.positions.filter((p) => !p.isCreditOrDiscountOrNegative && !p.isTransportCost && !p.isMtzSurcharge),
+  )
   const generatedRows = rows.length
   const totalAmount = rows.reduce((sum, p) => sum + (p.amountEurRounded ?? 0), 0)
-  const totalWeight = rows.reduce((sum, p) => sum + (p.calculatedWeightKgRounded ?? 0), 0)
+  // "Gesamte Eigenmasse" in der Export-Übersicht ist bewusst die Summe der
+  // vom Nutzer je Rechnung eingetragenen/gelesenen Werte ("Netto-
+  // Gesamtgewicht laut Rechnung"), NICHT die Summe der berechneten
+  // Positionsgewichte – so bleibt die Anzeige auch bei (noch) fehlerhafter
+  // Artikelzuordnung ein verlässlicher Vergleichswert.
+  const totalNetWeightFromInvoices = invoices.reduce((sum, inv) => sum + (inv.netWeightTotal ?? 0), 0)
   const totalStatisticalValue = rows.reduce((sum, p) => sum + (p.statisticalValueEurRounded ?? 0), 0)
   const manualCorrections = invoices.reduce(
     (sum, inv) =>
@@ -123,7 +130,7 @@ export function summarizeInvoices(invoices: Invoice[]) {
     processedInvoices,
     generatedRows,
     totalAmount,
-    totalWeight,
+    totalNetWeightFromInvoices,
     totalStatisticalValue,
     manualCorrections,
   }

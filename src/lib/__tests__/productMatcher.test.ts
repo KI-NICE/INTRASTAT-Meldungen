@@ -1,22 +1,11 @@
 // @vitest-environment jsdom
-import { describe, it, expect, beforeEach } from 'vitest'
-import { matchProduct, extractWeightFromDescription, normalizeForMatch } from '../productMatcher'
-import { clearManualMappings, saveManualMapping } from '../mappingStore'
-import { GEWICHTSLISTE } from '../../data/gewichtsliste'
+import { describe, it, expect } from 'vitest'
+import { matchProductWeight, extractWeightFromDescription } from '../productMatcher'
 
-const WEIGHT_LIST = GEWICHTSLISTE
-
-beforeEach(() => {
-  clearManualMappings()
-})
-
-describe('normalizeForMatch', () => {
-  it('vereinheitlicht Dezimalzeichen und zieht Zahl und Einheit zusammen', () => {
-    expect(normalizeForMatch('DPZ Hobby 1,0 L')).toBe('dpz hobby 1.0l')
-    expect(normalizeForMatch('DPZ Hobby 1.0L')).toBe('dpz hobby 1.0l')
-    expect(normalizeForMatch('Xtenso 15 cm')).toBe('xtenso 15cm')
-  })
-})
+const WEIGHT_MAP: Record<string, number> = {
+  '002000': 50,
+  '002001': 330,
+}
 
 describe('extractWeightFromDescription', () => {
   it('liest das Artikelgewicht aus der Produktbeschreibung', () => {
@@ -45,88 +34,45 @@ describe('extractWeightFromDescription', () => {
   })
 })
 
-describe('matchProduct', () => {
-  it('nutzt bei Flaschenartikeln das Gewicht aus der Beschreibung statt der Gewichtsliste', () => {
-    const result = matchProduct('Zyl.Flasche 250 ml natur Gew.:20 g', WEIGHT_LIST)
+describe('matchProductWeight', () => {
+  it('nutzt bei Flaschenartikeln das Gewicht aus der Beschreibung statt dem Artikel-Gewichtsmapping', () => {
+    const result = matchProductWeight('Zyl.Flasche 250 ml natur Gew.:20 g', '002000', WEIGHT_MAP)
     expect(result.matchType).toBe('beschreibung')
     expect(result.entry?.unitWeightGrams).toBe(20)
   })
 
-  it('findet exakte und normalisierte Treffer', () => {
-    expect(matchProduct('Sprayer K2', WEIGHT_LIST).matchType).toBe('exact')
-    expect(matchProduct('  sprayer   k2 ', WEIGHT_LIST).matchType).toBe('normalized')
-  })
-
-  it('ordnet "Sprayer K2 ..." dem Eintrag "Sprayer K2" zu (50 g)', () => {
-    const result = matchProduct('Sprayer K2 rot mit Kappe 28/410', WEIGHT_LIST)
-    expect(result.matchType).toBe('prefix')
-    expect(result.entry?.name).toBe('Sprayer K2')
+  it('findet einen Treffer im Artikel-Gewichtsmapping über die Artikelnummer', () => {
+    const result = matchProductWeight('Sprayer K2', '002000', WEIGHT_MAP)
+    expect(result.matchType).toBe('exact')
     expect(result.entry?.unitWeightGrams).toBe(50)
+    expect(result.entry?.name).toBe('002000')
   })
 
-  it('erkennt fortfolgende Bezeichnungen von "DPZ Hobby" trotz anderer Schreibweise', () => {
-    const result = matchProduct('DPZ Hobby 1,0 L natur mit Deckel', WEIGHT_LIST)
-    expect(result.entry?.name).toBe('DPZ Hobby 1.0L')
-    expect(result.entry?.unitWeightGrams).toBe(330)
-  })
-
-  it('bevorzugt bei Präfix-Treffern den längsten passenden Eintrag', () => {
-    const result = matchProduct('DPZ Profi 1,5 L C+ blau transparent', WEIGHT_LIST)
-    expect(result.entry?.name).toBe('DPZ Profi 1.5L C+')
-    expect(result.entry?.unitWeightGrams).toBe(475)
-  })
-
-  it('verwechselt "Sprayer K2" nicht mit "Sprayer K20"', () => {
-    const result = matchProduct('Sprayer K20 spezial', WEIGHT_LIST)
-    expect(result.matchType).not.toBe('prefix')
-    expect(result.entry).toBeNull()
-  })
-
-  it('ordnet "Coding Cap Set ..." nicht "Coding Cap einzeln" zu', () => {
-    expect(matchProduct('Coding Cap Set 12-fach', WEIGHT_LIST).entry?.name).toBe('Coding Cap Set')
-  })
-
-  it('übernimmt unsichere Treffer niemals automatisch', () => {
-    const result = matchProduct('Verschluss irgendwas', WEIGHT_LIST)
-    expect(result.entry).toBeNull()
+  it('liefert keinen Treffer ohne Artikelnummer', () => {
+    const result = matchProductWeight('Sprayer K2', undefined, WEIGHT_MAP)
     expect(result.matchType).toBe('none')
-  })
-
-  it('bietet bei unklaren Bezeichnungen Vorschläge an', () => {
-    const result = matchProduct('Sicherheits-Verschluss', WEIGHT_LIST)
     expect(result.entry).toBeNull()
-    expect(result.suggestions[0]?.entry.name).toBe('Sicherheitsverschluss')
   })
 
-  it('verwendet dauerhaft gespeicherte manuelle Zuordnungen', () => {
-    saveManualMapping('Hausintern XY-42', { name: 'Mini Trigger', unitWeightGrams: 16 })
-    const result = matchProduct('Hausintern XY-42', WEIGHT_LIST)
-    expect(result.matchType).toBe('manual')
-    expect(result.entry?.unitWeightGrams).toBe(16)
+  it('liefert keinen Treffer, wenn die Artikelnummer nicht im Mapping enthalten ist', () => {
+    const result = matchProductWeight('Unbekannt', '999999', WEIGHT_MAP)
+    expect(result.matchType).toBe('none')
+    expect(result.entry).toBeNull()
   })
 
-  it('verwendet Zuordnungen aus dem aktuellen Durchlauf', () => {
-    const result = matchProduct('Noch unbekannt', WEIGHT_LIST, {
-      'noch unbekannt': { name: 'Sprayer K3', unitWeightGrams: 35 },
-    })
-    expect(result.matchType).toBe('manual')
-    expect(result.entry?.unitWeightGrams).toBe(35)
-  })
-})
-
-describe('Gewichtsliste (hinterlegte Daten)', () => {
-  it('enthält alle 23 Produkte der Word-Datei', () => {
-    expect(GEWICHTSLISTE).toHaveLength(23)
+  it('findet eine manuell in die Gewichtsliste geschriebene Korrektur wie jeden anderen Eintrag (kein separater Speicher)', () => {
+    // Eine Korrektur landet direkt in der Gewichtsliste (siehe
+    // App.handleConfirmProductMapping) statt in einem eigenen, davon
+    // unabhängigen Speicher – dadurch wirkt sich ein Zurücksetzen der Liste
+    // immer sofort korrekt aus.
+    const correctedMap = { ...WEIGHT_MAP, '002000': 62 }
+    const result = matchProductWeight('Sprayer K2', '002000', correctedMap)
+    expect(result.matchType).toBe('exact')
+    expect(result.entry?.unitWeightGrams).toBe(62)
   })
 
-  it('führt die Gewichte in Gramm je Stück', () => {
-    expect(GEWICHTSLISTE.find((e) => e.name === 'Sprayer K2')?.unitWeightGrams).toBe(50)
-    expect(GEWICHTSLISTE.find((e) => e.name === 'DPZ Hobby 1.0L')?.unitWeightGrams).toBe(330)
-    expect(GEWICHTSLISTE.find((e) => e.name === 'Schraubverschluss')?.unitWeightGrams).toBe(4)
-  })
-
-  it('enthält keine doppelten Produktbezeichnungen', () => {
-    const names = GEWICHTSLISTE.map((e) => e.name)
-    expect(new Set(names).size).toBe(names.length)
+  it('ignoriert eine leere Artikelnummer', () => {
+    const result = matchProductWeight('Sprayer K2', '   ', WEIGHT_MAP)
+    expect(result.matchType).toBe('none')
   })
 })

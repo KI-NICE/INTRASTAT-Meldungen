@@ -1,28 +1,56 @@
-import type { Invoice, InvoicePosition, ProductWeightEntry } from '../types'
-import { extractPdfText } from './pdfExtract'
-import { parseInvoiceDocument, determineDestinationCountry } from './invoiceParser'
-import { matchProduct } from './productMatcher'
+import type { AiInvoiceFields, Invoice, InvoiceDirection, InvoicePosition } from '../types'
+import { readInvoiceWithAi } from './aiVerification'
+import { buildInvoiceFromAi, deriveReferencePeriod, resolveAmbiguousDateFormat } from './aiInvoiceBuilder'
+import { crosscheckDestinationCountryWithVatId } from './countryCodes'
+import { matchProductWeight } from './productMatcher'
 import { calculateAmountWithFreight, calculatePositionWeight, calculateStatisticalValues } from './calculations'
 import { validateInvoice } from './validation'
 
 let invoiceCounter = 0
 
+/** Positionen, die weder Gutschrift/Storno/Rabatt noch reine Werteposition (Fracht/Zuschlag) sind. */
+function isMerchandisePosition(position: InvoicePosition): boolean {
+  return !position.isCreditOrDiscountOrNegative && !position.isTransportCost && !position.isMtzSurcharge
+}
+
 /**
  * Berechnet Produktzuordnung, Gewichte, Beträge und den statistischen Wert
  * für alle Positionen einer Rechnung neu und führt anschließend die
- * Validierung aus. Wird sowohl bei der initialen PDF-Verarbeitung als auch
- * nach jeder manuellen Korrektur in der Prüfansicht aufgerufen, damit der
- * Zustand stets konsistent bleibt.
+ * Validierung aus. Wird sowohl bei der initialen Verarbeitung als auch nach
+ * jeder manuellen Korrektur in der Prüfansicht aufgerufen, damit der Zustand
+ * stets konsistent bleibt.
+ *
+ * `weightMaps` enthält je eine eigenständige Gewichtsliste für Ausgangs- (V)
+ * und Eingangsrechnungen (E) – beide Richtungen führen fachlich getrennte
+ * Artikel-Kataloge (siehe mappingStore.ts).
  */
 export function recalculateInvoice(
   invoice: Invoice,
-  weightList: ProductWeightEntry[],
+  weightMaps: Record<InvoiceDirection, Record<string, number>>,
   selectedMonth: string,
   selectedYear: string,
-  sessionMappings: Record<string, ProductWeightEntry>,
 ): Invoice {
+  // Mit Schrägstrich geschriebene Daten (TT/MM/JJJJ oder MM/TT/JJJJ – auf der
+  // Rechnung nicht unterscheidbar) werden anhand des gewählten Bezugsmonats
+  // aufgelöst und einheitlich im Format TT.MM.JJJJ dargestellt. Punkt-
+  // getrennte Daten bleiben unverändert. Gilt sowohl für von Claude gelesene
+  // als auch für manuell eingetragene Daten, da beide über diese Funktion
+  // laufen.
+  const resolvedDateRaw = resolveAmbiguousDateFormat(invoice.invoiceDateRaw, selectedMonth)
+  if (resolvedDateRaw !== invoice.invoiceDateRaw) {
+    const period = deriveReferencePeriod(resolvedDateRaw)
+    invoice = {
+      ...invoice,
+      invoiceDateRaw: resolvedDateRaw,
+      referenceMonth: period?.month ?? invoice.referenceMonth,
+      referenceYear: period?.year ?? invoice.referenceYear,
+    }
+  }
+
+  const effectiveWeightMap = weightMaps[invoice.richtung]
+
   const positions: InvoicePosition[] = invoice.positions.map((position) => {
-    if (position.isCreditOrDiscountOrNegative) {
+    if (!isMerchandisePosition(position)) {
       return {
         ...position,
         productMatch: undefined,
@@ -31,12 +59,15 @@ export function recalculateInvoice(
       }
     }
 
-    // Eine bereits manuell bestätigte Zuordnung bleibt erhalten, statt erneut
-    // automatisch ermittelt zu werden.
+    // Eine manuelle Korrektur OHNE Artikelnummer lässt sich über keine
+    // Gewichtsliste erneut herleiten und bleibt deshalb dauerhaft an dieser
+    // einen Position bestehen. Mit Artikelnummer wird IMMER frisch gegen die
+    // aktuelle Gewichtsliste abgeglichen, damit ein Wechsel/Zurücksetzen der
+    // Liste sich sofort auswirkt (siehe productMatcher.ts).
     const productMatch =
-      position.productMatch?.matchType === 'manual'
+      position.productMatch?.matchType === 'manual' && !position.articleNumberRaw
         ? position.productMatch
-        : matchProduct(position.productNameRaw, weightList, sessionMappings)
+        : matchProductWeight(position.productNameRaw, position.articleNumberRaw, effectiveWeightMap)
 
     let calculatedWeightKgRaw: number | undefined
     let calculatedWeightKgRounded: number | undefined
@@ -49,13 +80,38 @@ export function recalculateInvoice(
     return { ...position, productMatch, calculatedWeightKgRaw, calculatedWeightKgRounded }
   })
 
-  const relevantPositions = positions.filter((p) => !p.isCreditOrDiscountOrNegative)
-  const { roundedAmounts, rawAmounts } = calculateAmountWithFreight(relevantPositions, invoice.freightCost)
-  const { rawValues, roundedValues } = calculateStatisticalValues(rawAmounts)
+  // "09"-Positionen (Frachtkosten, sonstige Zuschläge – Materialteuerungs-
+  // zuschläge ausgenommen, die bereits direkt der Artikelposition zugerechnet
+  // wurden) werden nicht als eigene Zeile gemeldet; ihr Betrag wird anteilig
+  // nach Wertanteil auf die übrigen Positionen der Rechnung verteilt.
+  //
+  // Gibt es eine solche Position, ist deren Betrag maßgeblich – ein
+  // zusätzlich im Kopf ausgewiesener Frachtkosten-Betrag (`freightCost`)
+  // wird dann NICHT addiert, da er sonst dieselben Frachtkosten ein zweites
+  // Mal umlegen würde (Position + Kopf-Angabe beschreiben denselben Betrag).
+  const transportCostFromPositions = positions
+    .filter((p) => p.isTransportCost)
+    .reduce((sum, p) => sum + (p.amountEur ?? 0), 0)
+  const effectiveFreightCost = transportCostFromPositions > 0 ? transportCostFromPositions : (invoice.freightCost ?? 0)
+
+  const relevantPositions = positions.filter(isMerchandisePosition)
+
+  // Spalte N (Rechnungsbetrag): reiner Positionswert (inkl. ggf. zugerechnetem
+  // Materialteuerungszuschlag) zzgl. anteiliger Frachtkosten/Zuschläge.
+  const { roundedAmounts, rawAmounts } = calculateAmountWithFreight(
+    relevantPositions,
+    effectiveFreightCost || undefined,
+  )
+
+  // Spalte O (statistischer Wert): AUSSCHLIESSLICH auf Basis der reinen
+  // Positionswerte OHNE Frachtkosten/Zuschläge berechnet – nur diese dürfen
+  // für den 4-%-Zuschlag zusammengefasst werden.
+  const pureValues = relevantPositions.map((p) => p.amountEur ?? 0)
+  const { rawValues, roundedValues } = calculateStatisticalValues(pureValues)
 
   let idx = 0
   const positionsWithAmounts = positions.map((position) => {
-    if (position.isCreditOrDiscountOrNegative) return position
+    if (!isMerchandisePosition(position)) return position
     const amountWithFreightEurRaw = rawAmounts[idx]
     const amountEurRounded = roundedAmounts[idx]
     const statisticalSurchargeEurRaw = rawValues[idx] - (position.amountEur ?? 0)
@@ -70,78 +126,54 @@ export function recalculateInvoice(
     }
   })
 
-  const updatedInvoice: Invoice = { ...invoice, positions: positionsWithAmounts }
+  const destinationCountry = crosscheckDestinationCountryWithVatId(invoice.destinationCountry, invoice.vatId)
+
+  const updatedInvoice: Invoice = { ...invoice, positions: positionsWithAmounts, destinationCountry }
 
   const { issues, positions: validatedPositions } = validateInvoice(updatedInvoice, selectedMonth, selectedYear)
   updatedInvoice.issues = issues
   updatedInvoice.positions = validatedPositions
-  updatedInvoice.status = issues.some((i) => i.severity === 'error' && !i.resolved)
-    ? 'error'
-    : issues.some((i) => i.severity === 'warning' && !i.resolved)
-      ? 'warning'
-      : 'ok'
+  // Eine manuell bestätigte Gewichts-Toleranz-Warnung ("weightSum") hält eine
+  // ansonsten fehlerfreie Rechnung nicht mehr auf "Warnung" fest – sie wird
+  // grün markiert, das Badge zeigt stattdessen "Manuell bestätigt" (siehe
+  // ReviewTable.tsx). Ist die Warnung dagegen nur die automatische Toleranz
+  // von 1-2 kg (ohne manuelle Bestätigung) oder liegen weitere Warnungen vor,
+  // bleibt die Rechnung auf "Warnung" (orange).
+  const hasError = issues.some((i) => i.severity === 'error' && !i.resolved)
+  const hasBlockingWarning = issues.some(
+    (i) => i.severity === 'warning' && !i.resolved && !(i.field === 'weightSum' && updatedInvoice.weightToleranceAccepted),
+  )
+  updatedInvoice.status = hasError ? 'error' : hasBlockingWarning ? 'warning' : 'ok'
 
   return updatedInvoice
 }
 
 /**
- * Verarbeitet eine hochgeladene PDF-Datei vollständig: Text-/OCR-Extraktion,
- * Feld- und Positionserkennung, Produktzuordnung, Berechnungen, Validierung.
+ * Verarbeitet eine hochgeladene PDF-Datei vollständig: Claude liest die
+ * Rechnung (einzige Quelle), anschließend folgen Produktzuordnung,
+ * Berechnungen und Validierung. Schlägt das Auslesen fehl (z. B. Netzwerk-
+ * oder API-Fehler), bleibt die Rechnung leer und wird zur manuellen Prüfung
+ * gesperrt – es wird nichts geraten.
  */
 export async function processInvoiceFile(
   file: File,
-  weightList: ProductWeightEntry[],
+  richtung: InvoiceDirection,
+  weightMaps: Record<InvoiceDirection, Record<string, number>>,
   selectedMonth: string,
   selectedYear: string,
-  sessionMappings: Record<string, ProductWeightEntry>,
 ): Promise<Invoice> {
   invoiceCounter += 1
   const id = `invoice-${invoiceCounter}-${file.name}`
 
-  const { document, ocrUsed, extractionFailed } = await extractPdfText(file)
-  const fields = parseInvoiceDocument(document)
-  const destination = determineDestinationCountry(
-    fields.deliveryAddress,
-    fields.orderAddress,
-    fields.recipient,
-  )
+  let result: { model: string; fields: AiInvoiceFields } | null = null
+  let error: string | undefined
 
-  const baseInvoice: Invoice = {
-    id,
-    fileName: file.name,
-    rawText: document.text,
-    hasFontInfo: document.hasFontInfo,
-    ocrUsed,
-    extractionFailed,
-    language: fields.language,
-    invoiceNumber: fields.invoiceNumber,
-    invoiceDateRaw: fields.invoiceDateRaw,
-    referenceMonth: fields.referenceMonth,
-    referenceYear: fields.referenceYear,
-    recipient: fields.recipient,
-    orderAddress: fields.orderAddress,
-    deliveryAddress: fields.deliveryAddress,
-    usedAddress: destination.usedAddress,
-    destinationCountry: {
-      code: destination.code,
-      source: destination.source,
-      isManual: false,
-      token: destination.token,
-      needsConfirmation: destination.needsConfirmation,
-    },
-    vatIdRaw: fields.vatIdRaw,
-    vatId: fields.vatId,
-    netWeightTotalRaw: fields.netWeightTotalRaw,
-    netWeightTotal: fields.netWeightTotal,
-    goodsValueTotalRaw: fields.goodsValueTotalRaw,
-    goodsValueTotal: fields.goodsValueTotal,
-    freightCostRaw: fields.freightCostRaw,
-    freightCost: fields.freightCost,
-    positions: fields.positions,
-    manualCorrections: [],
-    issues: [],
-    status: 'pending',
+  try {
+    result = await readInvoiceWithAi(file, richtung)
+  } catch (err) {
+    error = err instanceof Error ? err.message : 'Unbekannter Fehler'
   }
 
-  return recalculateInvoice(baseInvoice, weightList, selectedMonth, selectedYear, sessionMappings)
+  const baseInvoice = buildInvoiceFromAi(id, file.name, richtung, result, error)
+  return recalculateInvoice(baseInvoice, weightMaps, selectedMonth, selectedYear)
 }
