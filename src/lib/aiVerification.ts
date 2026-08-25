@@ -78,3 +78,28 @@ export async function readInvoiceWithAi(file: File, richtung: InvoiceDirection):
 
   return { model: result.model ?? 'unbekannt', fields: result.fields }
 }
+
+export type MeldungReadResult = { model: string; invoiceNumbers: string[] }
+
+/**
+ * Liest die Rechnungsnummern (Beleg-Nr.) aus einer "Zusammenfassenden
+ * Meldung" (PDF-Export der Buchhaltung) aus – dient als Validierung vor der
+ * Rechnungsanalyse (siehe App.tsx, Schritt 2).
+ */
+export async function readMeldungWithAi(file: File): Promise<MeldungReadResult> {
+  const pdfBase64 = await fileToBase64(file)
+
+  const response = await fetch(apiUrl('/api/verify-meldung'), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ fileName: file.name, pdfBase64 }),
+  })
+
+  const body = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error((body as { error?: string }).error ?? `Auslesen fehlgeschlagen (HTTP ${response.status})`)
+  }
+
+  const result = body as { model?: string; invoiceNumbers?: string[] }
+  return { model: result.model ?? 'unbekannt', invoiceNumbers: result.invoiceNumbers ?? [] }
+}

@@ -1,4 +1,4 @@
-import { useState, type FocusEvent } from 'react'
+import { useState } from 'react'
 import type { Invoice, InvoicePosition, ProductWeightEntry } from '../types'
 import { listKnownCountries } from '../lib/countryCodes'
 import { formatGermanNumber, parseGermanNumber } from '../lib/germanNumber'
@@ -71,17 +71,15 @@ function getBadgeOverrideLabel(invoice: Invoice, toleranceSeverity: 'ok' | 'warn
 }
 
 /**
- * Rechnungen ohne offenen Klärungsbedarf ("korrekt" bzw. "Toleranz < 2 kg")
- * werden in der Prüfansicht standardmäßig ausgeblendet (siehe ReviewTable),
- * damit bei vielen Rechnungen nur die relevanten sichtbar bleiben. Eine
- * manuell bestätigte GRÖSSERE Abweichung ("Manuell bestätigt") sowie nicht
- * lesbare Rechnungen bleiben davon ausgenommen, da hier bewusst eine
- * Entscheidung getroffen wurde bzw. noch Handlungsbedarf besteht.
+ * Rechnungen ohne offenen Klärungsbedarf ("korrekt") werden in der
+ * Prüfansicht beim ersten Erscheinen standardmäßig eingeklappt/ausgeblendet
+ * (siehe ReviewTable) – eine frisch analysierte Rechnung hat zu diesem
+ * Zeitpunkt naturgemäß noch keine manuell bestätigte Toleranz (siehe dort für
+ * den separaten Auslöser, der eine Rechnung nachträglich ausblendet).
  */
 function isHideableInvoice(invoice: Invoice): boolean {
   if (invoice.ai?.status === 'fehler') return false
-  const toleranceSeverity = getToleranceSeverity(getWeightDifference(invoice))
-  return getInvoiceStatus(invoice) === 'ok' && getBadgeOverrideLabel(invoice, toleranceSeverity) !== 'Manuell bestätigt'
+  return getInvoiceStatus(invoice) === 'ok'
 }
 
 function StatusBadge({
@@ -99,6 +97,12 @@ function StatusBadge({
   return <span className={`badge badge--${status}`}>{label}</span>
 }
 
+const STATUS_FILTER_LABEL: Record<'error' | 'warning' | 'ok', string> = {
+  error: 'Fehler',
+  warning: 'Toleranz',
+  ok: 'korrekt',
+}
+
 export function ReviewTable({
   invoices,
   retryingId,
@@ -113,20 +117,32 @@ export function ReviewTable({
   onAcceptWeightTolerance,
   onRemoveInvoice,
 }: ReviewTableProps) {
-  const [showHiddenOk, setShowHiddenOk] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
-  // Je Rechnung zwei fest hinterlegte Werte: "collapsed" (Anzeige der Karte
-  // in dieser Liste – manuell über das Dreieck umschaltbar) und "hideEligible"
-  // (ob die Rechnung vom globalen Ein-/Ausblenden-Button betroffen ist – NUR
-  // über handleCardBlur veränderbar, nie durch das Dreieck). Beide starten
-  // beim ersten Erscheinen einer Rechnung mit demselben Wert aus
-  // isHideableInvoice ("korrekt"/"Toleranz < 2 kg" → true) und werden NICHT
-  // live aus dem aktuellen Status abgeleitet – sonst würde eine gerade
-  // korrigierte Rechnung schon während der Bearbeitung (z. B. bei jedem
-  // Tastendruck) zuklappen bzw. verschwinden. Erst wenn das bearbeitete Feld
-  // verlassen wird (siehe handleCardBlur), werden beide auf den dann
-  // aktuellen Status nachgezogen.
-  const [cardStates, setCardStates] = useState<Record<string, { collapsed: boolean; hideEligible: boolean }>>({})
+  // Standardmäßig sind Rechnungen mit offenem Klärungsbedarf sichtbar
+  // ("Fehler"/"kein Fehler"), rein "korrekte" dagegen ausgeblendet – deckt
+  // sich mit dem früheren Ausblenden-Standard, ist aber jetzt ein direkt
+  // sichtbarer, manuell umschaltbarer Filter statt eines automatischen
+  // Verhaltens.
+  const [statusFilter, setStatusFilter] = useState<Record<'error' | 'warning' | 'ok', boolean>>({
+    error: true,
+    warning: true,
+    ok: false,
+  })
+  // Je Rechnung drei fest hinterlegte Werte: "collapsed" (Anzeige der Karte –
+  // manuell über das Dreieck umschaltbar), "sortWeight" (Position in der
+  // Liste) und "hidden" (vom Statusfilter "korrekt" betroffen). Alle drei
+  // werden beim ersten Erscheinen einer Rechnung aus isHideableInvoice
+  // bestimmt und danach NIE automatisch aus dem laufenden Status
+  // nachgezogen – weder beim Bearbeiten noch beim Verlassen eines Felds. So
+  // springt eine gerade bearbeitete Rechnung nicht plötzlich in der Liste
+  // herum, klappt nicht von selbst zu und verschwindet nicht von selbst,
+  // auch wenn sie durch die Bearbeitung auf "korrekt" wechselt – das
+  // Zuklappen bleibt ausschließlich eine manuelle Aktion über das Dreieck.
+  // "hidden" wird EINZIG durch die explizite Bestätigung einer Toleranz
+  // (siehe markToleranceConfirmed) nachträglich auf true gesetzt.
+  const [cardStates, setCardStates] = useState<
+    Record<string, { collapsed: boolean; sortWeight: number; hidden: boolean }>
+  >({})
 
   // Bootstrapt den Standard für neu auftauchende Rechnungen WÄHREND des
   // Renderns (React-Pattern zum Ableiten von State aus Props ohne Effekt) –
@@ -138,7 +154,7 @@ export function ReviewTable({
       const next = { ...prev }
       for (const invoice of newInvoices) {
         const hideable = isHideableInvoice(invoice)
-        next[invoice.id] = { collapsed: hideable, hideEligible: hideable }
+        next[invoice.id] = { collapsed: hideable, sortWeight: hideable ? 1 : 0, hidden: hideable }
       }
       return next
     })
@@ -148,9 +164,9 @@ export function ReviewTable({
     return <p>Es wurden noch keine Rechnungen analysiert.</p>
   }
 
-  function getCardState(invoice: Invoice): { collapsed: boolean; hideEligible: boolean } {
+  function getCardState(invoice: Invoice): { collapsed: boolean; sortWeight: number; hidden: boolean } {
     const hideable = isHideableInvoice(invoice)
-    return cardStates[invoice.id] ?? { collapsed: hideable, hideEligible: hideable }
+    return cardStates[invoice.id] ?? { collapsed: hideable, sortWeight: hideable ? 1 : 0, hidden: hideable }
   }
 
   function toggleCollapsed(invoice: Invoice) {
@@ -161,33 +177,42 @@ export function ReviewTable({
   }
 
   /**
-   * Zieht Klapp- UND Ausblenden-Zustand einer Rechnung erst dann auf den
-   * aktuellen Status nach, wenn der Fokus die GESAMTE Kartenbox verlässt
-   * (Tab, Klick woanders hin) – nicht schon beim Wechsel zwischen zwei
-   * Feldern innerhalb derselben Karte. So klappt bzw. verschwindet eine
-   * gerade korrigierte Rechnung nicht mitten in der Bearbeitung.
+   * Wird EINZIG beim expliziten Klick auf "Toleranz bestätigen" aufgerufen
+   * (siehe onAcceptWeightTolerance unten) – klappt die Rechnung zu und
+   * blendet sie zusammen mit den anderen "korrekten" Rechnungen aus, weil
+   * hier bewusst eine Entscheidung getroffen wurde. Eine Rechnung, die nur
+   * durch eine Feldänderung (z. B. korrigiertes Gewicht) auf "korrekt"
+   * wechselt, bleibt davon unberührt (siehe passesStatusFilter).
    */
-  function handleCardBlur(invoice: Invoice, e: FocusEvent<HTMLElement>) {
-    if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
-    const hideable = isHideableInvoice(invoice)
-    setCardStates((prev) => ({ ...prev, [invoice.id]: { collapsed: hideable, hideEligible: hideable } }))
+  function markToleranceConfirmed(invoiceId: string, invoice: Invoice) {
+    setCardStates((prev) => ({ ...prev, [invoiceId]: { ...getCardState(invoice), collapsed: true, hidden: true } }))
   }
 
-  const hideableInvoices = invoices.filter((inv) => getCardState(inv).hideEligible)
+  // Eine Rechnung, die durch "hidden" (siehe oben) bewusst ausgeblendet
+  // wurde, folgt dem "korrekt"-Filter. Eine Rechnung, die nur LIVE (noch
+  // nicht bewusst ausgeblendet) auf "korrekt" steht – etwa weil gerade ein
+  // Gewicht passend korrigiert wurde –, bleibt dagegen IMMER sichtbar, bis
+  // sie manuell zugeklappt bzw. eine Toleranz bestätigt wurde; sie darf nicht
+  // einfach aus der Liste verschwinden.
+  function passesStatusFilter(invoice: Invoice): boolean {
+    if (getCardState(invoice).hidden) return statusFilter.ok
+    const status = getInvoiceStatus(invoice)
+    if (status === 'ok') return true
+    return statusFilter[status]
+  }
+
+  const statusCounts = { error: 0, warning: 0, ok: 0 }
+  for (const invoice of invoices) statusCounts[getInvoiceStatus(invoice)]++
+
   const query = searchQuery.trim().toLowerCase()
   const visibleInvoices = query
     ? invoices.filter((inv) => (inv.invoiceNumber ?? '').toLowerCase().includes(query))
-    : showHiddenOk
-      ? invoices
-      : invoices.filter((inv) => !getCardState(inv).hideEligible)
+    : invoices.filter(passesStatusFilter)
 
-  // Aufgeklappte Rechnungen (i. d. R. mit Fehlern) zuerst, zugeklappte danach
-  // – bei vielen Rechnungen bleibt so der offene Klärungsbedarf oben
-  // übersichtlich. Innerhalb der beiden Gruppen bleibt die Reihenfolge
-  // erhalten (stabile Sortierung).
-  const sortedInvoices = [...visibleInvoices].sort(
-    (a, b) => Number(getCardState(a).collapsed) - Number(getCardState(b).collapsed),
-  )
+  // Reihenfolge bleibt über die gesamte Bearbeitung fix (sortWeight wird
+  // einmalig beim Bootstrap vergeben, siehe oben) – Auf-/Zuklappen einer
+  // Rechnung verändert ihre Position in der Liste nicht mehr.
+  const sortedInvoices = [...visibleInvoices].sort((a, b) => getCardState(a).sortWeight - getCardState(b).sortWeight)
 
   return (
     <div className="review">
@@ -199,22 +224,18 @@ export function ReviewTable({
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
         />
-        {hideableInvoices.length > 0 && (
-          <button
-            type="button"
-            className="review__hidden-toggle"
-            title={
-              showHiddenOk
-                ? 'Blendet Rechnungen aus, die korrekt sind oder deren Toleranz < 2 kg beträgt.'
-                : 'Blendet Rechnungen ein, die korrekt sind oder deren Toleranz < 2 kg beträgt.'
-            }
-            onClick={() => setShowHiddenOk((v) => !v)}
-          >
-            {showHiddenOk
-              ? `${hideableInvoices.length} korrekte ${hideableInvoices.length === 1 ? 'Rechnung' : 'Rechnungen'} ausblenden`
-              : `${hideableInvoices.length} ausgeblendete ${hideableInvoices.length === 1 ? 'Rechnung' : 'Rechnungen'} einblenden`}
-          </button>
-        )}
+        <div className="review__status-filter">
+          {(['error', 'warning', 'ok'] as const).map((status) => (
+            <label key={status} className="review__status-filter-option">
+              <input
+                type="checkbox"
+                checked={statusFilter[status]}
+                onChange={(e) => setStatusFilter((prev) => ({ ...prev, [status]: e.target.checked }))}
+              />
+              {STATUS_FILTER_LABEL[status]} ({statusCounts[status]})
+            </label>
+          ))}
+        </div>
       </div>
       {sortedInvoices.map((invoice) => (
         <InvoiceCard
@@ -222,7 +243,6 @@ export function ReviewTable({
           invoice={invoice}
           collapsed={getCardState(invoice).collapsed}
           onToggleCollapse={() => toggleCollapsed(invoice)}
-          onCardBlur={(e) => handleCardBlur(invoice, e)}
           retryingId={retryingId}
           onEditPosition={onEditPosition}
           onEditInvoice={onEditInvoice}
@@ -232,7 +252,10 @@ export function ReviewTable({
           onRetryInvoice={onRetryInvoice}
           onAddPosition={onAddPosition}
           onRemovePosition={onRemovePosition}
-          onAcceptWeightTolerance={onAcceptWeightTolerance}
+          onAcceptWeightTolerance={(invoiceId) => {
+            onAcceptWeightTolerance(invoiceId)
+            markToleranceConfirmed(invoiceId, invoice)
+          }}
           onRemoveInvoice={onRemoveInvoice}
         />
       ))}
@@ -244,7 +267,6 @@ function InvoiceCard({
   invoice,
   collapsed,
   onToggleCollapse,
-  onCardBlur,
   retryingId,
   onEditPosition,
   onEditInvoice,
@@ -260,7 +282,6 @@ function InvoiceCard({
   invoice: Invoice
   collapsed: boolean
   onToggleCollapse: () => void
-  onCardBlur: (e: FocusEvent<HTMLElement>) => void
 } & Omit<ReviewTableProps, 'invoices'>) {
   const calculatedWeight = getCalculatedWeight(invoice)
   const transportCostPositions = invoice.positions.filter((p) => p.isTransportCost)
@@ -314,7 +335,6 @@ function InvoiceCard({
       </button>
       <section
         className={`invoice-card invoice-card--${invoiceStatus}${collapsed ? ' invoice-card--collapsed' : ''}`}
-        onBlur={onCardBlur}
       >
         {collapsed ? (
           <header className="invoice-card__header invoice-card__header--collapsed">

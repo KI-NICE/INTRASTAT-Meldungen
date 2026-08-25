@@ -7,7 +7,8 @@ import { ReviewTable } from './components/ReviewTable'
 import { PreviewTable } from './components/PreviewTable'
 import { ExportSummaryView } from './components/ExportSummaryView'
 import type { Company, Invoice, InvoiceDirection, InvoicePosition, ProductWeightEntry } from './types'
-import { checkAiAvailability, type AiAvailability } from './lib/aiVerification'
+import { checkAiAvailability, readMeldungWithAi, type AiAvailability } from './lib/aiVerification'
+import { compareMeldungWithFiles } from './lib/meldungValidation'
 import { ARTIKEL_GEWICHTSMAPPING, ARTIKEL_GEWICHTSMAPPING_STAND } from './data/artikelGewichtsmapping'
 import { parseArtikelGewichtsmappingXlsx } from './lib/weightList'
 import {
@@ -135,6 +136,23 @@ function AppHeader({ subtitle, company }: { subtitle?: ReactNode; company: Compa
 
 function VersionFooter() {
   return <footer className="app__version-footer">{__APP_VERSION__}</footer>
+}
+
+/** Zeigt an, wie lange die laufende Analyse (Schritt 3) bereits läuft – startet bei jedem Mount neu bei 0. */
+function AnalyzeElapsed() {
+  const [elapsedSeconds, setElapsedSeconds] = useState(0)
+  useEffect(() => {
+    const start = Date.now()
+    const id = setInterval(() => setElapsedSeconds(Math.floor((Date.now() - start) / 1000)), 1000)
+    return () => clearInterval(id)
+  }, [])
+  const minutes = Math.floor(elapsedSeconds / 60)
+  const seconds = elapsedSeconds % 60
+  return (
+    <span>
+      {minutes}:{String(seconds).padStart(2, '0')} min
+    </span>
+  )
 }
 
 /**
@@ -302,6 +320,11 @@ function App() {
   const [selectedYear, setSelectedYear] = useState(String(CURRENT_YEAR))
 
   const [invoiceFiles, setInvoiceFiles] = useState<File[]>([])
+  const [meldungFile, setMeldungFile] = useState<File | null>(null)
+  const [meldungInvoiceNumbers, setMeldungInvoiceNumbers] = useState<string[] | null>(null)
+  const [meldungLoading, setMeldungLoading] = useState(false)
+  const [meldungError, setMeldungError] = useState<string | null>(null)
+  const [showMeldungModal, setShowMeldungModal] = useState(false)
   const [invoices, setInvoices] = useState<Invoice[]>([])
   const [analyzing, setAnalyzing] = useState(false)
   const [analyzeProgress, setAnalyzeProgress] = useState<{ done: number; total: number; current: string } | null>(null)
@@ -462,6 +485,7 @@ function App() {
     setDirection(next)
     setInvoices(alreadyCaptured)
     setInvoiceFiles([])
+    resetMeldung()
     setStep(alreadyCaptured.length > 0 ? 4 : 1)
   }
 
@@ -476,6 +500,65 @@ function App() {
   function removeInvoiceFile(index: number) {
     setInvoiceFiles((prev) => prev.filter((_, i) => i !== index))
   }
+
+  function resetMeldung() {
+    setMeldungFile(null)
+    setMeldungInvoiceNumbers(null)
+    setMeldungLoading(false)
+    setMeldungError(null)
+    setShowMeldungModal(false)
+  }
+
+  /**
+   * Liest die Rechnungsnummern aus der "Zusammenfassenden Meldung" (optionale
+   * Validierung vor der Analyse, siehe handleGoToAnalysisStep) – Claude ist
+   * auch hier die alleinige Quelle, es gibt keine lokale PDF-Auswertung.
+   */
+  async function handleMeldungFile(file: File) {
+    setMeldungFile(file)
+    setMeldungInvoiceNumbers(null)
+    setMeldungError(null)
+    setMeldungLoading(true)
+    try {
+      const result = await readMeldungWithAi(file)
+      setMeldungInvoiceNumbers(result.invoiceNumbers)
+    } catch (err) {
+      setMeldungError(err instanceof Error ? err.message : 'Unbekannter Fehler beim Auslesen der Meldung.')
+    } finally {
+      setMeldungLoading(false)
+    }
+  }
+
+  function handleRemoveInvoiceFileWithConfirm(index: number, fileName: string) {
+    if (window.confirm(`Sind Sie sicher, dass Sie die Rechnung „${fileName}“ entfernen möchten?`)) {
+      removeInvoiceFile(index)
+    }
+  }
+
+  /**
+   * Schritt 2 → 3: Wurde eine Meldung hochgeladen, wird zuerst anhand der
+   * Dateinamen geprüft, ob alle Meldungs-Rechnungsnummern durch eine
+   * hochgeladene Datei gedeckt sind und umgekehrt. Bei Abweichungen öffnet
+   * sich ein Hinweis-Popup statt direkt weiterzuspringen; "Weiter zur
+   * Analyse" darin erzwingt den Sprung trotzdem.
+   */
+  function handleGoToAnalysisStep() {
+    if (meldungInvoiceNumbers && meldungInvoiceNumbers.length > 0) {
+      const comparison = compareMeldungWithFiles(meldungInvoiceNumbers, invoiceFiles)
+      if (comparison.missing.length > 0 || comparison.extra.length > 0) {
+        setShowMeldungModal(true)
+        return
+      }
+    }
+    setStep(3)
+  }
+
+  // Live aus dem aktuellen Datei-/Meldungsstand abgeleitet, damit das Popup
+  // sich sofort aktualisiert, wenn dort eine Rechnung entfernt oder ergänzt
+  // wird (siehe handleGoToAnalysisStep sowie das Popup weiter unten).
+  const meldungComparison = meldungInvoiceNumbers
+    ? compareMeldungWithFiles(meldungInvoiceNumbers, invoiceFiles)
+    : null
 
   /** Lässt Claude alle aktuell ausgewählten Dateien auslesen und hängt die Ergebnisse an. */
   async function runAnalysis(): Promise<void> {
@@ -828,6 +911,7 @@ function App() {
    */
   function handleStartNewAnalysis() {
     setInvoiceFiles([])
+    resetMeldung()
     setInvoices([])
     setAnalyzeProgress(null)
     setFilesByInvoiceId({})
@@ -852,6 +936,7 @@ function App() {
       setFinishedInvoicesByDirection((prev) => ({ ...prev, [direction]: invoices }))
     }
     setInvoiceFiles([])
+    resetMeldung()
     setDirection(null)
     setStep(1)
   }
@@ -868,6 +953,7 @@ function App() {
     setDirection(null)
     setInvoices([])
     setInvoiceFiles([])
+    resetMeldung()
     setFinishedInvoicesByDirection({})
     setStep(1)
   }
@@ -893,6 +979,7 @@ function App() {
     setDirection(otherDirection)
     setInvoices(alreadyCaptured)
     setInvoiceFiles([])
+    resetMeldung()
     setStep(targetStep ?? (alreadyCaptured.length > 0 ? 4 : 2))
   }
 
@@ -909,6 +996,7 @@ function App() {
     if (shouldClear) {
       setInvoices([])
       setInvoiceFiles([])
+      resetMeldung()
     }
     setStep(2)
   }
@@ -1138,6 +1226,23 @@ function App() {
                 </li>
               ))}
             </ul>
+            <div className="meldung-upload">
+              <UploadButton
+                label="Zusammenfassende Meldung (PDF) zur Validierung hochladen"
+                accept=".pdf"
+                onFile={handleMeldungFile}
+              />
+              {meldungLoading && <p className="hint">Meldung wird ausgelesen…</p>}
+              {meldungFile && !meldungLoading && !meldungError && (
+                <p className="hint">
+                  {meldungFile.name} – {meldungInvoiceNumbers?.length ?? 0} Rechnungsnummer(n) erkannt.{' '}
+                  <button type="button" onClick={resetMeldung}>
+                    entfernen
+                  </button>
+                </p>
+              )}
+              {meldungError && <p className="hint hint--error">{meldungError}</p>}
+            </div>
             <div className="step-actions">
               <button type="button" onClick={() => setStep(1)}>
                 Zurück
@@ -1146,7 +1251,7 @@ function App() {
                 type="button"
                 className="button--primary-solid"
                 disabled={invoiceFiles.length === 0}
-                onClick={() => setStep(3)}
+                onClick={handleGoToAnalysisStep}
               >
                 Weiter
               </button>
@@ -1156,6 +1261,61 @@ function App() {
                 Nur manuelle Eingabe
               </button>
             </div>
+            {showMeldungModal && meldungComparison && (
+              <div className="modal-overlay" onClick={() => setShowMeldungModal(false)}>
+                <div className="modal" onClick={(e) => e.stopPropagation()}>
+                  <h2>Abgleich mit der Zusammenfassenden Meldung</h2>
+                  {meldungComparison.extra.length > 0 && (
+                    <div className="modal__section">
+                      <p>
+                        Diese hochgeladene(n) Rechnung(en) {meldungComparison.extra.length === 1 ? 'steht' : 'stehen'}{' '}
+                        nicht auf der Meldeliste:
+                      </p>
+                      <ul className="meldung-list">
+                        {meldungComparison.extra.map((entry) => (
+                          <li key={entry.fileIndex}>
+                            <span>{entry.fileName}</span>
+                            <button
+                              type="button"
+                              className="meldung-list__remove"
+                              title="Rechnung entfernen"
+                              onClick={() => handleRemoveInvoiceFileWithConfirm(entry.fileIndex, entry.fileName)}
+                            >
+                              ×
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {meldungComparison.missing.length > 0 && (
+                    <div className="modal__section">
+                      <p>Diese Rechnung(en) aus der Meldeliste {meldungComparison.missing.length === 1 ? 'fehlt' : 'fehlen'} noch:</p>
+                      <ul className="meldung-list">
+                        {meldungComparison.missing.map((number) => (
+                          <li key={number}>
+                            <span>{number}</span>
+                            <UploadButton label="hinzufügen" accept=".pdf" onFile={(file) => handleInvoiceFiles([file])} />
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  <div className="step-actions">
+                    <button
+                      type="button"
+                      className="button--primary-solid"
+                      onClick={() => {
+                        setShowMeldungModal(false)
+                        setStep(3)
+                      }}
+                    >
+                      Weiter zur Analyse
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </section>
         )}
 
@@ -1167,7 +1327,7 @@ function App() {
             {analyzing && analyzeProgress && (
               <p>
                 Analysiere {analyzeProgress.done + 1} / {analyzeProgress.total}
-                {analyzeProgress.current ? ` – ${analyzeProgress.current}` : ''}
+                {analyzeProgress.current ? ` – ${analyzeProgress.current}` : ''} · <AnalyzeElapsed />
               </p>
             )}
             <div className="step-actions">

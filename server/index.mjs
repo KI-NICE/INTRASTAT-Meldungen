@@ -230,7 +230,60 @@ function buildSystemPrompt(richtung) {
   return SYSTEM_PROMPT_BASE + extra + SYSTEM_PROMPT_FOOTER
 }
 
+const MELDUNG_TOOL = {
+  name: 'meldungsdaten',
+  description: 'Gibt die eindeutigen Rechnungsnummern (Beleg-Nr.) einer Zusammenfassenden Meldung zurück.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      invoiceNumbers: {
+        type: 'array',
+        description:
+          'Alle eindeutigen Beleg-Nr., bei denen der Text der Buchungszeile "Ausgangsrechnung" oder "Eingangsrechnung" lautet. Zeilen mit "Skonto", "Gutschrift" oder anderen Buchungstexten werden NICHT aufgenommen. Kommt eine Beleg-Nr. mehrfach vor (z. B. mehrere Positionen/Buchungszeilen derselben Rechnung), wird sie nur EINMAL zurückgegeben.',
+        items: { type: 'string' },
+      },
+    },
+    required: ['invoiceNumbers'],
+  },
+}
+
+const MELDUNG_SYSTEM_PROMPT = `Du liest eine "Zusammenfassende Meldung" (tabellarische Buchhaltungsübersicht) vollständig aus. Die Tabelle enthält je Buchungszeile die Spalten USt-IdNr, Kontonummer, Bezeichnung, Periode, Datum, Beleg-Nr., Text, Betrag, StS und Journalnummer.
+
+Gib ausschließlich über das Werkzeug "meldungsdaten" die Liste aller eindeutigen Beleg-Nr. zurück, deren Text-Spalte "Ausgangsrechnung" oder "Eingangsrechnung" lautet. Zeilen mit dem Text "Skonto", "Gutschrift" oder anderen Buchungsarten werden NICHT zurückgegeben. Kommt eine Beleg-Nr. mehrfach vor (z. B. mehrere Positionen derselben Rechnung), gib sie nur EINMAL zurück.`
+
 /* ---------------------------------------------------------- API-Aufruf */
+
+/** Sendet einen fertigen Messages-Payload an Claude – erst mit PDF-Beta-Header, bei einem darauf bezogenen Fehler ohne. */
+async function sendAnthropicPayload(payload) {
+  async function send(withPdfBeta) {
+    const headers = {
+      'content-type': 'application/json',
+      'x-api-key': API_KEY,
+      'anthropic-version': '2023-06-01',
+    }
+    if (withPdfBeta) headers['anthropic-beta'] = 'pdfs-2024-09-25'
+    return fetch(`${API_BASE}/v1/messages`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+    })
+  }
+
+  let response = await send(true)
+  if (!response.ok) {
+    const text = await response.text()
+    if (/beta/i.test(text)) {
+      response = await send(false)
+      if (!response.ok) {
+        throw new Error(`Anthropic-API-Fehler (HTTP ${response.status}): ${await response.text()}`)
+      }
+    } else {
+      throw new Error(`Anthropic-API-Fehler (HTTP ${response.status}): ${text}`)
+    }
+  }
+
+  return response.json()
+}
 
 async function callAnthropic(pdfBase64, fileName, richtung) {
   const model = await resolveModel()
@@ -258,41 +311,49 @@ async function callAnthropic(pdfBase64, fileName, richtung) {
     ],
   }
 
-  async function send(withPdfBeta) {
-    const headers = {
-      'content-type': 'application/json',
-      'x-api-key': API_KEY,
-      'anthropic-version': '2023-06-01',
-    }
-    if (withPdfBeta) headers['anthropic-beta'] = 'pdfs-2024-09-25'
-    return fetch(`${API_BASE}/v1/messages`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(payload),
-    })
-  }
-
-  // Erst mit PDF-Beta-Header, bei einem darauf bezogenen Fehler ohne.
-  let response = await send(true)
-  if (!response.ok) {
-    const text = await response.text()
-    if (/beta/i.test(text)) {
-      response = await send(false)
-      if (!response.ok) {
-        throw new Error(`Anthropic-API-Fehler (HTTP ${response.status}): ${await response.text()}`)
-      }
-    } else {
-      throw new Error(`Anthropic-API-Fehler (HTTP ${response.status}): ${text}`)
-    }
-  }
-
-  const body = await response.json()
+  const body = await sendAnthropicPayload(payload)
   const toolUse = (body.content ?? []).find((block) => block.type === 'tool_use')
   if (!toolUse) {
     throw new Error('Die Antwort enthielt keine strukturierten Rechnungsdaten.')
   }
 
   return { model, fields: toolUse.input, usage: body.usage ?? null }
+}
+
+/** Liest die Rechnungsnummern (Beleg-Nr.) aus einer "Zusammenfassenden Meldung" aus (siehe /api/verify-meldung). */
+async function callAnthropicMeldung(pdfBase64, fileName) {
+  const model = await resolveModel()
+
+  const payload = {
+    model,
+    max_tokens: 4000,
+    system: MELDUNG_SYSTEM_PROMPT,
+    tools: [MELDUNG_TOOL],
+    tool_choice: { type: 'tool', name: MELDUNG_TOOL.name },
+    messages: [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'document',
+            source: { type: 'base64', media_type: 'application/pdf', data: pdfBase64 },
+          },
+          {
+            type: 'text',
+            text: `Lies alle Rechnungsnummern (Beleg-Nr.) aus dieser Zusammenfassenden Meldung (${fileName}) gemäß den Regeln aus.`,
+          },
+        ],
+      },
+    ],
+  }
+
+  const body = await sendAnthropicPayload(payload)
+  const toolUse = (body.content ?? []).find((block) => block.type === 'tool_use')
+  if (!toolUse) {
+    throw new Error('Die Antwort enthielt keine strukturierten Meldungsdaten.')
+  }
+
+  return { model, invoiceNumbers: toolUse.input.invoiceNumbers ?? [] }
 }
 
 /* --------------------------------------------------------- HTTP-Hilfsmittel */
@@ -417,6 +478,27 @@ const server = createServer(async (req, res) => {
       sendJson(res, 200, result)
     } catch (error) {
       console.error('[verify]', error)
+      sendJson(res, 500, { error: error instanceof Error ? error.message : 'Unbekannter Fehler' })
+    }
+    return
+  }
+
+  if (url.pathname === '/api/verify-meldung' && req.method === 'POST') {
+    if (!API_KEY) {
+      sendJson(res, 503, { error: 'Kein ANTHROPIC_API_KEY gesetzt. Bitte in der .env hinterlegen.' })
+      return
+    }
+    try {
+      const raw = await readBody(req)
+      const { fileName, pdfBase64 } = JSON.parse(raw.toString('utf8'))
+      if (!pdfBase64) {
+        sendJson(res, 400, { error: 'Es wurde keine PDF übermittelt.' })
+        return
+      }
+      const result = await callAnthropicMeldung(pdfBase64, fileName ?? 'Meldung.pdf')
+      sendJson(res, 200, result)
+    } catch (error) {
+      console.error('[verify-meldung]', error)
       sendJson(res, 500, { error: error instanceof Error ? error.message : 'Unbekannter Fehler' })
     }
     return
