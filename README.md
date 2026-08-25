@@ -212,16 +212,14 @@ ANTHROPIC_API_KEY=test ANTHROPIC_BASE_URL=http://127.0.0.1:8788 npm run server &
 APP_URL=http://127.0.0.1:8787/ node e2e/run.mjs
 ```
 
-## Deployment auf GitHub Pages
+## Deployment
 
-Der Workflow `.github/workflows/deploy.yml` baut die App bei jedem Push auf
-`main` und veröffentlicht sie über GitHub Pages.
-
-**Wichtiger Hinweis:** Auf GitHub Pages läuft kein Proxy und damit keine
-Claude-Anbindung. Da Claude die alleinige Quelle der Rechnungsdaten ist, zeigt
-die auf GitHub Pages gehostete App nur den Blockbildschirm – eine Analyse ist
-dort nicht möglich. Der produktive Betrieb erfordert den lokalen Proxy
-(`npm start`).
+Ein GitHub-Pages-Deployment ist bewusst **nicht** eingerichtet: Auf GitHub
+Pages läuft kein Proxy und damit keine Claude-Anbindung. Da Claude die
+alleinige Quelle der Rechnungsdaten ist, wäre eine dort gehostete App nicht
+funktionsfähig – eine Analyse ist ohne den lokalen Proxy nicht möglich. Der
+produktive Betrieb erfordert daher immer den lokalen Proxy (`npm start`) bzw.
+ein Hosting-Ziel, das Node-Server-Prozesse ausführen kann.
 
 ## Datenschutz
 
@@ -271,5 +269,4 @@ server/index.mjs             lokaler Proxy zu Claude (Key bleibt serverseitig)
 tools/serve.ps1              lokaler Webserver für Windows ohne Node.js
 e2e/                         optionales End-to-End-Skript inkl. API-Nachbildung
 .env.example                 Vorlage für den API-Key (die .env wird nicht eingecheckt)
-.github/workflows/           GitHub Pages Deployment (ohne Claude-Anbindung, s. o.)
 ```

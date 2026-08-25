@@ -59,7 +59,7 @@ nicht mehr als Regex-/Layout-Heuristiken im Browser.
 | Standardzustand | **Zwingend erforderlich.** Ohne erreichbaren Proxy mit gültigem Key zeigt die App nur einen Blockbildschirm (`App.tsx`, Zustand `aiAvailability.available === false`). |
 | Modellwahl | Über `ANTHROPIC_MODEL` konfigurierbar; ohne Angabe wählt der Proxy das neueste verfügbare Sonnet-Modell des Kontos. |
 | Strukturierte Antwort | Erzwungener Werkzeugaufruf (`tool_choice`) mit JSON-Schema (`RESULT_TOOL`), damit die Antwort maschinell weiterverarbeitet werden kann. |
-| Verfügbarkeit | Auf GitHub Pages nicht verfügbar (kein Proxy) – die App ist dort auf den Blockbildschirm beschränkt. |
+| Verfügbarkeit | Erfordert ein Hosting-Ziel mit Node-Server-Betrieb; ein reines Static-Hosting wie GitHub Pages scheidet aus, da dort kein Proxy laufen kann. |
 | Test ohne Datenübertragung | `e2e/mock-anthropic.mjs` bildet die API nach, sodass der gesamte Weg ohne echten Key und ohne echte Rechnungsdaten geprüft werden kann. |
 
 ## 1. Bestätigte fachliche Regeln (Zusammenfassung der Antworten)
@@ -202,7 +202,8 @@ Länder-Zuordnungen im `localStorage` des Nutzers.
   selbst gemeldete Unsicherheiten erscheinen als Warnung.
 - Die Toleranz von 0 kg führt bei rundungsbedingter Drift weiterhin häufiger
   zu gesperrten Rechnungen (siehe Hinweis in Abschnitt 1).
-- Auf GitHub Pages ist die App nicht funktionsfähig, da dort kein Proxy läuft.
+- Es gibt bewusst kein GitHub-Pages-Deployment: Ein reines Static-Hosting kann
+  den Proxy nicht betreiben, die App wäre dort nicht funktionsfähig.
 
 ---
 
