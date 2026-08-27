@@ -122,7 +122,7 @@ sich unter „Erweitert" jederzeit löschen.
 
 ## Installation und Entwicklung
 
-Voraussetzung: Node.js ≥ 20.
+Voraussetzung: Node.js ≥ 22 (wegen jsdom 30 in den Tests).
 
 ```bash
 npm install
