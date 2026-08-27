@@ -29,13 +29,13 @@ export type Company = 'ST' | 'SPC'
 export type DestinationCountryInfo = {
   code: string | null
   /** Woraus der Code stammt – für die Nachvollziehbarkeit in der Prüfansicht. */
-  source: 'ai' | 'gelernte-zuordnung' | 'manual' | 'vat-id-override' | 'unresolved'
+  source: 'excel' | 'gelernte-zuordnung' | 'manual' | 'vat-id-override' | 'unresolved'
   isManual: boolean
   /** true, solange ein Vorschlag noch bestätigt werden muss. */
   needsConfirmation?: boolean
   /**
-   * Von Claude gelesenes Länderkürzel, bevor der Abgleich mit der USt-IdNr.
-   * es ggf. überschrieben hat (nur zur Nachvollziehbarkeit).
+   * Ursprünglich ermitteltes Länderkürzel, bevor der Abgleich mit der
+   * USt-IdNr. es ggf. überschrieben hat (nur zur Nachvollziehbarkeit).
    */
   overriddenAddressCode?: string | null
 }
@@ -81,7 +81,7 @@ export type InvoicePosition = {
   quantityRaw?: string
   quantity?: number
   amountRaw?: string
-  amountEur?: number // Positionsbetrag laut Rechnung, von Claude gelesen
+  amountEur?: number // Positionsbetrag laut Rechnung
   isSpecialUnit: boolean // Warennummer 39233010
   /**
    * Fett gesetzte Artikelnummer unter „Artikelangaben“/„Part description“,
@@ -99,8 +99,8 @@ export type InvoicePosition = {
   /**
    * Materialteuerungszuschlag-Position, die einer vorangehenden
    * Artikelposition direkt zugerechnet wurde (siehe
-   * `aiInvoiceBuilder.classifyNonMerchandisePositions`). Wird ebenfalls nicht
-   * als eigene Intrastat-Zeile gemeldet und wiegt nichts.
+   * `excelImport.attributeMtzToPreviousPosition`). Wird ebenfalls nicht als
+   * eigene Intrastat-Zeile gemeldet und wiegt nichts.
    */
   isMtzSurcharge: boolean
   /** Betrag eines zugerechneten Materialteuerungszuschlags (nur an der Artikelposition gesetzt, zur Nachvollziehbarkeit). */
@@ -127,33 +127,32 @@ export type InvoicePosition = {
   requiresManualDecision: boolean
 }
 
-export type InvoiceStatus = 'pending' | 'analyzing' | 'ok' | 'warning' | 'error' | 'locked'
+export type InvoiceStatus = 'pending' | 'ok' | 'warning' | 'error'
 
 export type Invoice = {
   id: string
   fileName: string
   /** Ausgangs- oder Eingangsrechnung – bestimmt Spalte A im Export ("V"/"E"). */
   richtung: InvoiceDirection
-  /** true bei vollständig manuell erfassten Rechnungen (kein Claude-Auslesen). */
+  /** true bei vollständig manuell erfassten Rechnungen. */
   isManualEntry?: boolean
 
-  /** Von Claude erkannte Rechnungssprache. */
+  /** Sprache der Rechnung (derzeit ohne fachliche Auswirkung, da keine PDF-Auswertung mehr stattfindet). */
   language: InvoiceLanguage
-  /** Rechnungsnummer – oben rechts fett neben "RECHNUNG" bzw. "INVOICE". */
+  /** Rechnungsnummer. */
   invoiceNumber?: string
-  /** Rechnungsdatum aus "vom:" bzw. "dated:" unter der Rechnungsnummer. */
+  /** Rechnungsdatum. */
   invoiceDateRaw?: string
   referenceMonth?: string // MM, aus dem Rechnungsdatum abgeleitet
   referenceYear?: string // JJJJ, aus dem Rechnungsdatum abgeleitet (intern, für Plausibilität)
 
   destinationCountry?: DestinationCountryInfo
   /**
-   * Die für das Bestimmungsland verwendete Adresse als Text, wie von Claude
-   * wiedergegeben. Dient zur Anzeige und als Schlüssel für adressgenau
-   * gemerkte manuelle Korrekturen.
+   * Die für das Bestimmungsland verwendete Adresse als Text. Dient zur
+   * Anzeige und als Schlüssel für adressgenau gemerkte manuelle Korrekturen.
    */
   destinationAddressText?: string
-  /** Welche Adresse laut Claude verwendet wurde (Lieferadresse/Auftragsadresse/Empfängeradresse/Versandanschrift). */
+  /** Welche Adresse verwendet wurde (Lieferadresse/Auftragsadresse/Empfängeradresse/Versandanschrift). */
   destinationAddressKind?: 'lieferadresse' | 'auftragsadresse' | 'empfaengeradresse' | 'versandanschrift'
 
   vatId?: string // bereinigt (ohne Leerzeichen)
@@ -163,8 +162,8 @@ export type Invoice = {
    * Ausgangsrechnungen: E/G immer leer, H fest "09", I fest "DE".
    * Eingangsrechnungen: F, H und O entfallen vollständig (siehe
    * `excelTemplate.buildExportRow`); G ist fest "09" (das eigene
-   * Bundesland als Bestimmungsbundesland). Nur E und I werden von Claude
-   * gelesen, sofern auf der Rechnung erkennbar – sonst leer und in der
+   * Bundesland als Bestimmungsbundesland). Nur E und I werden aus der
+   * Rechnung übernommen, sofern vorhanden – sonst leer und in der
    * Prüfansicht manuell einzutragen.
    */
   versendungsMitgliedstaat?: string // Spalte E
@@ -191,58 +190,6 @@ export type Invoice = {
   manualCorrections: ManualCorrection[]
   issues: ValidationIssue[]
   status: InvoiceStatus
-
-  /** Ergebnis des Auslesens durch Claude (einzige Quelle der Rechnungsdaten). */
-  ai?: AiExtractionInfo
 }
 
 export type ManualProductMapping = Record<string, ProductWeightEntry>
-
-/* -------------------------------------------------- Auslesen durch Claude */
-
-/** Von Claude aus der Rechnungs-PDF gelesene Felder. */
-export type AiInvoiceFields = {
-  language?: 'de' | 'en' | null
-  invoiceNumber?: string | null
-  invoiceDate?: string | null
-  vatId?: string | null
-  destinationCountryCode?: string | null
-  destinationAddressUsed?: 'lieferadresse' | 'auftragsadresse' | 'empfaengeradresse' | 'versandanschrift' | null
-  /** Die für das Bestimmungsland verwendete Adresse als Text (Zeilen durch "\n" getrennt). */
-  destinationAddressText?: string | null
-  /**
-   * Nur bei Eingangsrechnungen relevant (Spalte E): ISO-3166-1-Alpha-2-Code
-   * des Landes, aus dem die Ware tatsächlich versendet wurde
-   * (Lieferantenadresse). Bei Ausgangsrechnungen immer null.
-   */
-  versendungsmitgliedstaatCode?: string | null
-  /**
-   * Nur bei Eingangsrechnungen relevant (Spalte I): tatsächliches
-   * Ursprungsland der Ware (kann vom Versandland abweichen), sofern erkennbar.
-   */
-  ursprungslandCode?: string | null
-  netWeightTotalKg?: number | null
-  freightCostEur?: number | null
-  positions?: {
-    positionNumber?: string | null
-    productDescription?: string | null
-    customsCode?: string | null
-    quantity?: number | null
-    amountEur?: number | null
-    weightPerPieceGrams?: number | null
-    isCreditOrDiscount?: boolean | null
-    /**
-     * Fett gesetzte Artikelnummer unter „Artikelangaben“/„Part description“,
-     * über der Artikel-Bezeichnung (z. B. „090025“ für Frachtkosten). Sonst null.
-     */
-    articleNumber?: string | null
-  }[]
-  uncertainFields?: string[]
-}
-
-export type AiExtractionInfo = {
-  status: 'fertig' | 'fehler'
-  model?: string
-  uncertainFields: string[]
-  error?: string
-}

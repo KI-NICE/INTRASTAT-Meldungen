@@ -8,10 +8,10 @@
       "port": 5173
     },
     {
-      "name": "intrastat-proxy",
+      "name": "intrastat-preview",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["start"],
-      "port": 8787
+      "port": 4173
     }
   ]
 }

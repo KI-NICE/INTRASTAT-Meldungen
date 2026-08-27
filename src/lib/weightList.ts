@@ -33,7 +33,7 @@ export async function parseArtikelGewichtsmappingXlsx(
   return mapping
 }
 
-function cellString(value: ExcelJS.CellValue): string {
+export function cellString(value: ExcelJS.CellValue): string {
   if (value == null) return ''
   if (typeof value === 'object' && 'result' in value && value.result != null) {
     return String(value.result).trim()
@@ -44,7 +44,7 @@ function cellString(value: ExcelJS.CellValue): string {
   return String(value).trim()
 }
 
-function cellNumber(value: ExcelJS.CellValue): number | null {
+export function cellNumber(value: ExcelJS.CellValue): number | null {
   if (value == null) return null
   if (typeof value === 'number') return value
   if (typeof value === 'object' && 'result' in value && typeof value.result === 'number') {

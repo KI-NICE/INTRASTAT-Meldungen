@@ -1049,36 +1049,6 @@ input:not([type]) {
   max-width: 460px;
 }
 
-.ai-panel {
-  margin: 12px 0;
-  padding: 10px 12px;
-  border-radius: 8px;
-  border: 1px solid #c7d2fe;
-  background: #eef2ff;
-  font-size: 0.85rem;
-}
-
-.ai-panel--open {
-  border-color: #fde68a;
-  background: #fffbeb;
-}
-
-.ai-panel--error {
-  border-color: #fecaca;
-  background: #fef2f2;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.ai-blocked {
-  padding: 16px 20px;
-  border-radius: 8px;
-  border: 1px solid #fecaca;
-  background: #fef2f2;
-  max-width: 640px;
-}
-
 .confirm-suggestion {
   margin-top: 4px;
   font-size: 0.78rem;

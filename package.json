@@ -9,8 +9,7 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "test": "vitest run",
-    "server": "node server/index.mjs",
-    "start": "npm run build && node server/index.mjs"
+    "start": "npm run build && npm run preview"
   },
   "dependencies": {
     "exceljs": "^4.4.0",

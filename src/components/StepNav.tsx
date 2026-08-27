@@ -1,4 +1,4 @@
-const STEP_LABELS = ['Bezugsmonat', 'Rechnungen', 'Analyse', 'Prüfung', 'Vorschau', 'Export']
+const STEP_LABELS = ['Bezugsmonat', 'Rechnungen', 'Prüfung', 'Vorschau', 'Export']
 
 export function StepNav({ currentStep, onNavigate }: { currentStep: number; onNavigate?: (step: number) => void }) {
   return (

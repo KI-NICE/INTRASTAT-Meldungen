@@ -5,13 +5,11 @@ import { formatGermanNumber, parseGermanNumber } from '../lib/germanNumber'
 
 type ReviewTableProps = {
   invoices: Invoice[]
-  retryingId: string | null
   onEditPosition: (invoiceId: string, positionId: string, patch: Partial<InvoicePosition>, field: string) => void
   onEditInvoice: (invoiceId: string, patch: Partial<Invoice>, field: string) => void
   onConfirmProductMapping: (invoiceId: string, positionId: string, entry: ProductWeightEntry) => void
   onConfirmCountry: (invoiceId: string, isoCode: string) => void
   onNegativeDecision: (invoiceId: string, positionId: string, include: boolean) => void
-  onRetryInvoice: (invoiceId: string) => void
   onAddPosition: (invoiceId: string) => void
   onRemovePosition: (invoiceId: string, positionId: string) => void
   onAcceptWeightTolerance: (invoiceId: string) => void
@@ -28,7 +26,7 @@ const ADDRESS_KIND_LABEL: Record<string, string> = {
 }
 
 const COUNTRY_SOURCE_LABEL: Record<string, string> = {
-  ai: '',
+  excel: '',
   'gelernte-zuordnung': 'gelernte Zuordnung für diese Adresse',
   manual: 'manuell bestätigt',
   'vat-id-override': 'anhand USt-IdNr. korrigiert',
@@ -78,7 +76,6 @@ function getBadgeOverrideLabel(invoice: Invoice, toleranceSeverity: 'ok' | 'warn
  * den separaten Auslöser, der eine Rechnung nachträglich ausblendet).
  */
 function isHideableInvoice(invoice: Invoice): boolean {
-  if (invoice.ai?.status === 'fehler') return false
   return getInvoiceStatus(invoice) === 'ok'
 }
 
@@ -105,13 +102,11 @@ const STATUS_FILTER_LABEL: Record<'error' | 'warning' | 'ok', string> = {
 
 export function ReviewTable({
   invoices,
-  retryingId,
   onEditPosition,
   onEditInvoice,
   onConfirmProductMapping,
   onConfirmCountry,
   onNegativeDecision,
-  onRetryInvoice,
   onAddPosition,
   onRemovePosition,
   onAcceptWeightTolerance,
@@ -138,8 +133,10 @@ export function ReviewTable({
   // herum, klappt nicht von selbst zu und verschwindet nicht von selbst,
   // auch wenn sie durch die Bearbeitung auf "korrekt" wechselt – das
   // Zuklappen bleibt ausschließlich eine manuelle Aktion über das Dreieck.
-  // "hidden" wird EINZIG durch die explizite Bestätigung einer Toleranz
-  // (siehe markToleranceConfirmed) nachträglich auf true gesetzt.
+  // "hidden" wird NUR durch zwei bewusste Nutzeraktionen nachträglich auf
+  // true gesetzt: die explizite Bestätigung einer Toleranz (siehe
+  // markToleranceConfirmed) oder das manuelle Zuklappen einer zu diesem
+  // Zeitpunkt bereits fehlerfreien Rechnung (siehe toggleCollapsed).
   const [cardStates, setCardStates] = useState<
     Record<string, { collapsed: boolean; sortWeight: number; hidden: boolean }>
   >({})
@@ -169,10 +166,22 @@ export function ReviewTable({
     return cardStates[invoice.id] ?? { collapsed: hideable, sortWeight: hideable ? 1 : 0, hidden: hideable }
   }
 
+  /**
+   * Klappt eine Rechnung manuell auf/zu. Wird sie dabei zugeklappt UND steht
+   * sie zu diesem Zeitpunkt bereits auf "korrekt" (kein Fehler, keine
+   * Toleranz), gilt das als bewusste Entscheidung des Nutzers: Die Rechnung
+   * wird zusätzlich ausgeblendet (wie bei markToleranceConfirmed) und taucht
+   * danach nur noch im "korrekt"-Filter auf, nicht mehr unter "Fehler"/
+   * "Toleranz". Bei offenem Klärungsbedarf ändert das Zuklappen nur die
+   * Anzeige, nicht den Filter-Status.
+   */
   function toggleCollapsed(invoice: Invoice) {
+    const current = getCardState(invoice)
+    const collapsing = !current.collapsed
+    const dismissable = collapsing && getInvoiceStatus(invoice) === 'ok'
     setCardStates((prev) => ({
       ...prev,
-      [invoice.id]: { ...getCardState(invoice), collapsed: !getCardState(invoice).collapsed },
+      [invoice.id]: { ...current, collapsed: collapsing, hidden: dismissable ? true : current.hidden },
     }))
   }
 
@@ -243,13 +252,11 @@ export function ReviewTable({
           invoice={invoice}
           collapsed={getCardState(invoice).collapsed}
           onToggleCollapse={() => toggleCollapsed(invoice)}
-          retryingId={retryingId}
           onEditPosition={onEditPosition}
           onEditInvoice={onEditInvoice}
           onConfirmProductMapping={onConfirmProductMapping}
           onConfirmCountry={onConfirmCountry}
           onNegativeDecision={onNegativeDecision}
-          onRetryInvoice={onRetryInvoice}
           onAddPosition={onAddPosition}
           onRemovePosition={onRemovePosition}
           onAcceptWeightTolerance={(invoiceId) => {
@@ -267,13 +274,11 @@ function InvoiceCard({
   invoice,
   collapsed,
   onToggleCollapse,
-  retryingId,
   onEditPosition,
   onEditInvoice,
   onConfirmProductMapping,
   onConfirmCountry,
   onNegativeDecision,
-  onRetryInvoice,
   onAddPosition,
   onRemovePosition,
   onAcceptWeightTolerance,
@@ -294,33 +299,6 @@ function InvoiceCard({
   const toleranceSeverity = getToleranceSeverity(weightDifference)
   const invoiceStatus = getInvoiceStatus(invoice)
   const badgeOverrideLabel = getBadgeOverrideLabel(invoice, toleranceSeverity)
-
-  if (invoice.ai?.status === 'fehler') {
-    return (
-      <section className="invoice-card invoice-card--error">
-        <header className="invoice-card__header">
-          <h3>
-            {invoice.fileName} <StatusBadge status="error" />
-          </h3>
-          <button type="button" className="remove-invoice" onClick={() => onRemoveInvoice(invoice.id)}>
-            Rechnung entfernen
-          </button>
-        </header>
-        <div className="ai-panel ai-panel--error">
-          <strong>Claude konnte diese Rechnung nicht auslesen.</strong> {invoice.ai.error}
-          <div className="step-actions">
-            <button
-              type="button"
-              disabled={retryingId === invoice.id}
-              onClick={() => onRetryInvoice(invoice.id)}
-            >
-              {retryingId === invoice.id ? 'Wird erneut ausgelesen…' : 'Erneut versuchen'}
-            </button>
-          </div>
-        </div>
-      </section>
-    )
-  }
 
   return (
     <div className="invoice-card-row">
@@ -359,7 +337,7 @@ function InvoiceCard({
                 if (
                   invoice.isManualEntry ||
                   window.confirm(
-                    `Soll die Rechnung „${invoice.fileName}“ wirklich entfernt werden? Sie müsste andernfalls erneut hochgeladen und von Claude ausgelesen werden.`,
+                    `Soll die Rechnung „${invoice.fileName}“ wirklich entfernt werden? Sie müsste andernfalls erneut erfasst werden.`,
                   )
                 ) {
                   onRemoveInvoice(invoice.id)
@@ -558,12 +536,6 @@ function InvoiceCard({
             </li>
           ))}
         </ul>
-      )}
-
-      {invoice.ai && invoice.ai.uncertainFields.length > 0 && (
-        <div className="ai-panel ai-panel--open">
-          <strong>Von Claude als unsicher gemeldet:</strong> {invoice.ai.uncertainFields.join(', ')}
-        </div>
       )}
 
       <div className="review-table-wrapper">

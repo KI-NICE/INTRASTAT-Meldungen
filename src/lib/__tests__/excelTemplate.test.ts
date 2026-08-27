@@ -41,7 +41,7 @@ function makeInvoice(positions: InvoicePosition[]): Invoice {
     language: 'de',
     referenceMonth: '08',
     referenceYear: '2026',
-    destinationCountry: { code: 'BE', source: 'ai', isManual: false },
+    destinationCountry: { code: 'BE', source: 'excel', isManual: false },
     vatId: 'BE0123456789',
     versendungsMitgliedstaat: '',
     bestimmungsBundesland: '',
@@ -236,7 +236,7 @@ describe('excelTemplate', () => {
     const invoice = {
       ...makeInvoice([]),
       richtung: 'E' as const,
-      destinationCountry: { code: 'NL', source: 'ai' as const, isManual: false },
+      destinationCountry: { code: 'NL', source: 'excel' as const, isManual: false },
       versendungsMitgliedstaat: 'NL',
       bestimmungsBundesland: '09',
       ursprungsBundesland: '',

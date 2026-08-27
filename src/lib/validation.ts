@@ -19,16 +19,6 @@ export function validateInvoice(
 ): { issues: ValidationIssue[]; positions: InvoicePosition[] } {
   const issues: ValidationIssue[] = []
 
-  if (invoice.ai?.status === 'fehler') {
-    issues.push(
-      makeIssue(
-        'extraction',
-        'error',
-        `„${invoice.fileName}“ konnte von Claude nicht gelesen werden: ${invoice.ai.error ?? 'unbekannter Fehler'}. Bitte erneut versuchen.`,
-      ),
-    )
-  }
-
   if (!invoice.invoiceDateRaw) {
     issues.push(
       makeIssue(

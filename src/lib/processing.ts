@@ -1,12 +1,9 @@
-import type { AiInvoiceFields, Invoice, InvoiceDirection, InvoicePosition } from '../types'
-import { readInvoiceWithAi } from './aiVerification'
-import { buildInvoiceFromAi, deriveReferencePeriod, resolveAmbiguousDateFormat } from './aiInvoiceBuilder'
+import type { Invoice, InvoiceDirection, InvoicePosition } from '../types'
+import { deriveReferencePeriod, resolveAmbiguousDateFormat } from './aiInvoiceBuilder'
 import { crosscheckDestinationCountryWithVatId } from './countryCodes'
 import { matchProductWeight } from './productMatcher'
 import { calculateAmountWithFreight, calculatePositionWeight, calculateStatisticalValues } from './calculations'
 import { validateInvoice } from './validation'
-
-let invoiceCounter = 0
 
 /** Positionen, die weder Gutschrift/Storno/Rabatt noch reine Werteposition (Fracht/Zuschlag) sind. */
 function isMerchandisePosition(position: InvoicePosition): boolean {
@@ -33,9 +30,8 @@ export function recalculateInvoice(
   // Mit Schrägstrich geschriebene Daten (TT/MM/JJJJ oder MM/TT/JJJJ – auf der
   // Rechnung nicht unterscheidbar) werden anhand des gewählten Bezugsmonats
   // aufgelöst und einheitlich im Format TT.MM.JJJJ dargestellt. Punkt-
-  // getrennte Daten bleiben unverändert. Gilt sowohl für von Claude gelesene
-  // als auch für manuell eingetragene Daten, da beide über diese Funktion
-  // laufen.
+  // getrennte Daten bleiben unverändert. Gilt für Excel-importierte ebenso
+  // wie für manuell eingetragene Daten, da beide über diese Funktion laufen.
   const resolvedDateRaw = resolveAmbiguousDateFormat(invoice.invoiceDateRaw, selectedMonth)
   if (resolvedDateRaw !== invoice.invoiceDateRaw) {
     const period = deriveReferencePeriod(resolvedDateRaw)
@@ -146,34 +142,4 @@ export function recalculateInvoice(
   updatedInvoice.status = hasError ? 'error' : hasBlockingWarning ? 'warning' : 'ok'
 
   return updatedInvoice
-}
-
-/**
- * Verarbeitet eine hochgeladene PDF-Datei vollständig: Claude liest die
- * Rechnung (einzige Quelle), anschließend folgen Produktzuordnung,
- * Berechnungen und Validierung. Schlägt das Auslesen fehl (z. B. Netzwerk-
- * oder API-Fehler), bleibt die Rechnung leer und wird zur manuellen Prüfung
- * gesperrt – es wird nichts geraten.
- */
-export async function processInvoiceFile(
-  file: File,
-  richtung: InvoiceDirection,
-  weightMaps: Record<InvoiceDirection, Record<string, number>>,
-  selectedMonth: string,
-  selectedYear: string,
-): Promise<Invoice> {
-  invoiceCounter += 1
-  const id = `invoice-${invoiceCounter}-${file.name}`
-
-  let result: { model: string; fields: AiInvoiceFields } | null = null
-  let error: string | undefined
-
-  try {
-    result = await readInvoiceWithAi(file, richtung)
-  } catch (err) {
-    error = err instanceof Error ? err.message : 'Unbekannter Fehler'
-  }
-
-  const baseInvoice = buildInvoiceFromAi(id, file.name, richtung, result, error)
-  return recalculateInvoice(baseInvoice, weightMaps, selectedMonth, selectedYear)
 }

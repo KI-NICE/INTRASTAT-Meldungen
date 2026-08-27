@@ -1,13 +1,43 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from 'vitest'
 import { recalculateInvoice } from '../processing'
-import { buildInvoiceFromAi } from '../aiInvoiceBuilder'
-import type { AiInvoiceFields, Invoice } from '../../types'
+import type { Invoice, InvoicePosition } from '../../types'
+
+function makePosition(overrides: Partial<InvoicePosition> = {}): InvoicePosition {
+  return {
+    id: overrides.id ?? `pos-${Math.random().toString(36).slice(2, 8)}`,
+    lineNo: 1,
+    positionNumber: undefined,
+    productNameRaw: '',
+    isSpecialUnit: false,
+    isTransportCost: false,
+    isMtzSurcharge: false,
+    isCreditOrDiscountOrNegative: false,
+    manualCorrections: [],
+    issues: [],
+    status: 'ok',
+    requiresManualDecision: false,
+    ...overrides,
+  }
+}
+
+function makeInvoice(positions: InvoicePosition[], overrides: Partial<Invoice> = {}): Invoice {
+  return {
+    id: 'invoice-1',
+    fileName: 'test.xlsx',
+    richtung: 'V',
+    language: 'de',
+    positions,
+    manualCorrections: [],
+    issues: [],
+    status: 'pending',
+    ...overrides,
+  }
+}
 
 describe('recalculateInvoice löst mehrdeutige Schrägstrich-Daten anhand des Bezugsmonats auf', () => {
   it('normalisiert ein mit Schrägstrichen geschriebenes Datum auf TT.MM.JJJJ und leitet den Bezugsmonat korrekt ab', () => {
-    const fields: AiInvoiceFields = { invoiceDate: '07/13/2026', positions: [] }
-    const invoice = buildInvoiceFromAi('id-slash', 'rechnung.pdf', 'V', { model: 'x', fields })
+    const invoice = makeInvoice([], { invoiceDateRaw: '07/13/2026' })
     const result = recalculateInvoice(invoice, { V: {}, E: {} }, '07', '2026')
     expect(result.invoiceDateRaw).toBe('13.07.2026')
     expect(result.referenceMonth).toBe('07')
@@ -21,14 +51,11 @@ describe('Frachtkosten: keine doppelte Berechnung', () => {
     // (Artikelnummer 090025) als auch im Kopf aus – ein reales Muster, das
     // sonst zur doppelten Umlage führte (einmal aus der Position, einmal
     // zusätzlich aus dem Kopf-Betrag addiert).
-    const fields: AiInvoiceFields = {
-      freightCostEur: 10,
-      positions: [
-        { positionNumber: '10', productDescription: 'Sprayer K2', customsCode: '39235000', quantity: 100, amountEur: 100 },
-        { positionNumber: '20', productDescription: 'Frachtkosten', customsCode: null, quantity: null, amountEur: 10, articleNumber: '090025' },
-      ],
-    }
-    const invoice = buildInvoiceFromAi('id-1', 'rechnung.pdf', 'V', { model: 'claude-x', fields }, undefined)
+    const positions = [
+      makePosition({ id: 'p10', positionNumber: '10', productNameRaw: 'Sprayer K2', customsCode: '39235000', quantity: 100, amountEur: 100 }),
+      makePosition({ id: 'p20', positionNumber: '20', productNameRaw: 'Frachtkosten', articleNumberRaw: '090025', isTransportCost: true, amountEur: 10 }),
+    ]
+    const invoice = makeInvoice(positions, { freightCost: 10 })
     const result = recalculateInvoice(invoice, { V: {}, E: {} }, '08', '2026')
 
     const normalPosition = result.positions.find((p) => p.positionNumber === '10')
@@ -40,28 +67,22 @@ describe('Frachtkosten: keine doppelte Berechnung', () => {
   })
 
   it('verwendet den Kopf-Betrag, wenn keine Frachtkosten-Position vorhanden ist', () => {
-    const fields: AiInvoiceFields = {
-      freightCostEur: 10,
-      positions: [
-        { positionNumber: '10', productDescription: 'Sprayer K2', customsCode: '39235000', quantity: 100, amountEur: 100 },
-      ],
-    }
-    const invoice = buildInvoiceFromAi('id-2', 'rechnung.pdf', 'V', { model: 'claude-x', fields }, undefined)
+    const positions = [
+      makePosition({ id: 'p10', positionNumber: '10', productNameRaw: 'Sprayer K2', customsCode: '39235000', quantity: 100, amountEur: 100 }),
+    ]
+    const invoice = makeInvoice(positions, { freightCost: 10 })
     const result = recalculateInvoice(invoice, { V: {}, E: {} }, '08', '2026')
 
     expect(result.positions[0].amountEurRounded).toBe(110)
   })
 
   it('summiert mehrere Frachtkosten-Positionen, addiert aber nicht zusätzlich den Kopf-Betrag', () => {
-    const fields: AiInvoiceFields = {
-      freightCostEur: 15,
-      positions: [
-        { positionNumber: '10', productDescription: 'Sprayer K2', customsCode: '39235000', quantity: 100, amountEur: 100 },
-        { positionNumber: '20', productDescription: 'Fracht A', customsCode: null, quantity: null, amountEur: 6, articleNumber: '090025' },
-        { positionNumber: '30', productDescription: 'Fracht B', customsCode: null, quantity: null, amountEur: 4, articleNumber: '090025' },
-      ],
-    }
-    const invoice = buildInvoiceFromAi('id-3', 'rechnung.pdf', 'V', { model: 'claude-x', fields }, undefined)
+    const positions = [
+      makePosition({ id: 'p10', positionNumber: '10', productNameRaw: 'Sprayer K2', customsCode: '39235000', quantity: 100, amountEur: 100 }),
+      makePosition({ id: 'p20', positionNumber: '20', productNameRaw: 'Fracht A', articleNumberRaw: '090025', isTransportCost: true, amountEur: 6 }),
+      makePosition({ id: 'p30', positionNumber: '30', productNameRaw: 'Fracht B', articleNumberRaw: '090025', isTransportCost: true, amountEur: 4 }),
+    ]
+    const invoice = makeInvoice(positions, { freightCost: 15 })
     const result = recalculateInvoice(invoice, { V: {}, E: {} }, '08', '2026')
 
     // Summe der Frachtkosten-Positionen: 10 EUR -> 100 + 10 = 110, nicht 125.
@@ -71,13 +92,10 @@ describe('Frachtkosten: keine doppelte Berechnung', () => {
 
 describe('Spalte O: 4-%-Zuschlag ausschließlich auf reinen Warenwert ohne Frachtkosten', () => {
   it('berechnet den statistischen Wert ohne die Frachtkosten mit einzubeziehen', () => {
-    const fields: AiInvoiceFields = {
-      freightCostEur: 100,
-      positions: [
-        { positionNumber: '10', productDescription: 'Sprayer K2', customsCode: '39235000', quantity: 100, amountEur: 100 },
-      ],
-    }
-    const invoice = buildInvoiceFromAi('id-4', 'rechnung.pdf', 'V', { model: 'claude-x', fields }, undefined)
+    const positions = [
+      makePosition({ id: 'p10', positionNumber: '10', productNameRaw: 'Sprayer K2', customsCode: '39235000', quantity: 100, amountEur: 100 }),
+    ]
+    const invoice = makeInvoice(positions, { freightCost: 100 })
     const result = recalculateInvoice(invoice, { V: {}, E: {} }, '08', '2026')
 
     // Spalte N enthält die Frachtkosten (100 + 100 = 200), Spalte O NICHT:
@@ -87,14 +105,11 @@ describe('Spalte O: 4-%-Zuschlag ausschließlich auf reinen Warenwert ohne Frach
   })
 
   it('verteilt den 4-%-Zuschlag wertanteilig auf Basis der reinen Positionswerte', () => {
-    const fields: AiInvoiceFields = {
-      freightCostEur: 1000,
-      positions: [
-        { positionNumber: '10', productDescription: 'A', customsCode: '39235000', quantity: 1, amountEur: 750 },
-        { positionNumber: '20', productDescription: 'B', customsCode: '39235000', quantity: 1, amountEur: 250 },
-      ],
-    }
-    const invoice = buildInvoiceFromAi('id-5', 'rechnung.pdf', 'V', { model: 'claude-x', fields }, undefined)
+    const positions = [
+      makePosition({ id: 'p10', positionNumber: '10', productNameRaw: 'A', customsCode: '39235000', quantity: 1, amountEur: 750 }),
+      makePosition({ id: 'p20', positionNumber: '20', productNameRaw: 'B', customsCode: '39235000', quantity: 1, amountEur: 250 }),
+    ]
+    const invoice = makeInvoice(positions, { freightCost: 1000 })
     const result = recalculateInvoice(invoice, { V: {}, E: {} }, '08', '2026')
 
     // 4 % von (750+250)=1000 -> 40 EUR, wertanteilig 75/25 verteilt: 30 / 10.
@@ -105,14 +120,29 @@ describe('Spalte O: 4-%-Zuschlag ausschließlich auf reinen Warenwert ohne Frach
 
 describe('Materialteuerungszuschlag: Zurechnung wirkt sich auf Spalte N und O aus', () => {
   it('rechnet den Zuschlag der Artikelposition zu, bevor N und O berechnet werden', () => {
-    // "002000" -> Zuschlagsartikel "090040" laut MTZ-Artikel.xlsx.
-    const fields: AiInvoiceFields = {
-      positions: [
-        { positionNumber: '10', productDescription: 'Sprayer K2', customsCode: '39235000', quantity: 1000, amountEur: 100, articleNumber: '002000' },
-        { positionNumber: '20', productDescription: 'MTZ', customsCode: null, quantity: null, amountEur: 10, articleNumber: '090040' },
-      ],
-    }
-    const invoice = buildInvoiceFromAi('id-6', 'rechnung.pdf', 'V', { model: 'claude-x', fields }, undefined)
+    // Die Zurechnung (Betrag + Artikelposition) ist bereits vor
+    // recalculateInvoice erfolgt (siehe excelImport.attributeMtzToPreviousPosition).
+    const positions = [
+      makePosition({
+        id: 'p10',
+        positionNumber: '10',
+        productNameRaw: 'Sprayer K2',
+        customsCode: '39235000',
+        quantity: 1000,
+        amountEur: 110, // 100 Warenwert + 10 zugerechneter MTZ
+        articleNumberRaw: '002000',
+        mtzSurchargeEurRaw: 10,
+      }),
+      makePosition({
+        id: 'p20',
+        positionNumber: '20',
+        productNameRaw: 'MTZ',
+        articleNumberRaw: '090040',
+        isMtzSurcharge: true,
+        amountEur: 10,
+      }),
+    ]
+    const invoice = makeInvoice(positions)
     const result = recalculateInvoice(invoice, { V: {}, E: {} }, '08', '2026')
 
     const article = result.positions.find((p) => p.positionNumber === '10')
@@ -128,12 +158,10 @@ describe('Materialteuerungszuschlag: Zurechnung wirkt sich auf Spalte N und O au
 
 describe('Gewichtsliste ändern/zurücksetzen wirkt sich sofort auf bereits zugeordnete Artikel aus', () => {
   it('rechnet nach einem Wechsel der Gewichtsliste sofort mit dem neuen (bzw. zurückgesetzten) Wert, nicht mehr mit einer alten manuellen Korrektur', () => {
-    const fields: AiInvoiceFields = {
-      positions: [
-        { positionNumber: '10', productDescription: 'Sprayer K2', customsCode: '39235000', quantity: 1000, amountEur: 100, articleNumber: '002000' },
-      ],
-    }
-    const invoice = buildInvoiceFromAi('id-reset', 'rechnung.pdf', 'V', { model: 'x', fields })
+    const positions = [
+      makePosition({ id: 'p10', positionNumber: '10', productNameRaw: 'Sprayer K2', customsCode: '39235000', quantity: 1000, amountEur: 100, articleNumberRaw: '002000' }),
+    ]
+    const invoice = makeInvoice(positions)
 
     // Erste Berechnung mit Werksstand (50 g).
     const first = recalculateInvoice(invoice, { V: { '002000': 50 }, E: {} }, '08', '2026')
@@ -162,12 +190,10 @@ describe('Gewichtsliste ändern/zurücksetzen wirkt sich sofort auf bereits zuge
   })
 
   it('behält eine manuelle Korrektur OHNE Artikelnummer dauerhaft an dieser Position (keine Gewichtsliste zum Nachschlagen vorhanden)', () => {
-    const fields: AiInvoiceFields = {
-      positions: [
-        { positionNumber: '10', productDescription: 'Sprayer ohne Artikelnummer', customsCode: '39235000', quantity: 10, amountEur: 100 },
-      ],
-    }
-    const invoice = buildInvoiceFromAi('id-no-article', 'rechnung.pdf', 'V', { model: 'x', fields })
+    const positions = [
+      makePosition({ id: 'p10', positionNumber: '10', productNameRaw: 'Sprayer ohne Artikelnummer', customsCode: '39235000', quantity: 10, amountEur: 100 }),
+    ]
+    const invoice = makeInvoice(positions)
     const corrected = {
       ...invoice,
       positions: invoice.positions.map((p) => ({
@@ -182,44 +208,37 @@ describe('Gewichtsliste ändern/zurücksetzen wirkt sich sofort auf bereits zuge
 })
 
 describe('Status bei Gewichtsdifferenzen und manuell bestätigter Toleranz', () => {
-  function buildValidInvoice(overrides: Partial<AiInvoiceFields> = {}): Invoice {
-    const fields: AiInvoiceFields = {
-      invoiceDate: '05.08.2026',
+  function buildValidInvoice(overrides: Partial<Invoice> = {}): Invoice {
+    const positions = [
+      makePosition({ id: 'p10', positionNumber: '10', productNameRaw: 'Sprayer K2', customsCode: '39235000', quantity: 1000, amountEur: 100, articleNumberRaw: '002000' }),
+    ]
+    return makeInvoice(positions, {
+      invoiceDateRaw: '05.08.2026',
+      referenceMonth: '08',
+      referenceYear: '2026',
       vatId: 'BE0123456789',
-      destinationCountryCode: 'BE',
-      destinationAddressText: 'Kunde AG\nStr. 1\nB-1000 Bruessel',
-      netWeightTotalKg: 100,
-      positions: [
-        {
-          positionNumber: '10',
-          productDescription: 'Sprayer K2',
-          customsCode: '39235000',
-          quantity: 1000,
-          amountEur: 100,
-          articleNumber: '002000',
-        },
-      ],
+      destinationCountry: { code: 'BE', source: 'excel', isManual: false },
+      netWeightTotal: 100,
       ...overrides,
-    }
-    return buildInvoiceFromAi('id-x', 'rechnung.pdf', 'V', { model: 'x', fields })
+    })
   }
 
   it('erzeugt bei einer Differenz von 1-2 kg keine Meldung und lässt eine sonst fehlerfreie Rechnung "ok" (das Badge "Toleranz < 2 kg" wird clientseitig in ReviewTable.tsx ergänzt)', () => {
-    // Berechnetes Gewicht: 100 Stück * 100 g / 1000 = 100 kg -> Differenz -1 kg.
-    const invoice = buildValidInvoice({ netWeightTotalKg: 101 })
+    // Berechnetes Gewicht: 1000 Stück * 100 g / 1000 = 100 kg -> Differenz -1 kg.
+    const invoice = buildValidInvoice({ netWeightTotal: 101 })
     const result = recalculateInvoice(invoice, { V: { '002000': 100 }, E: {} }, '08', '2026')
     expect(result.status).toBe('ok')
     expect(result.issues.some((i) => i.field === 'weightSum')).toBe(false)
   })
 
   it('sperrt Differenzen über 2 kg ohne manuelle Bestätigung als Fehler', () => {
-    const invoice = buildValidInvoice({ netWeightTotalKg: 105 })
+    const invoice = buildValidInvoice({ netWeightTotal: 105 })
     const result = recalculateInvoice(invoice, { V: { '002000': 100 }, E: {} }, '08', '2026')
     expect(result.status).toBe('error')
   })
 
   it('markiert eine ansonsten fehlerfreie Rechnung nach manueller Toleranz-Bestätigung grün (ok)', () => {
-    const invoice = { ...buildValidInvoice({ netWeightTotalKg: 105 }), weightToleranceAccepted: true }
+    const invoice = buildValidInvoice({ netWeightTotal: 105, weightToleranceAccepted: true })
     const result = recalculateInvoice(invoice, { V: { '002000': 100 }, E: {} }, '08', '2026')
     expect(result.status).toBe('ok')
     expect(result.issues.some((i) => i.field === 'weightSum')).toBe(true)

@@ -7,8 +7,7 @@ import { ReviewTable } from './components/ReviewTable'
 import { PreviewTable } from './components/PreviewTable'
 import { ExportSummaryView } from './components/ExportSummaryView'
 import type { Company, Invoice, InvoiceDirection, InvoicePosition, ProductWeightEntry } from './types'
-import { checkAiAvailability, readMeldungWithAi, type AiAvailability } from './lib/aiVerification'
-import { compareMeldungWithFiles } from './lib/meldungValidation'
+import { compareMeldungWithInvoices } from './lib/meldungValidation'
 import { ARTIKEL_GEWICHTSMAPPING, ARTIKEL_GEWICHTSMAPPING_STAND } from './data/artikelGewichtsmapping'
 import { parseArtikelGewichtsmappingXlsx } from './lib/weightList'
 import {
@@ -18,7 +17,8 @@ import {
   buildExportFileName,
   MUSTERTABELLE_STAND,
 } from './lib/excelTemplate'
-import { processInvoiceFile, recalculateInvoice } from './lib/processing'
+import { recalculateInvoice } from './lib/processing'
+import { parseExcelInvoices, parseExcelMeldungInvoiceNumbers } from './lib/excelImport'
 import {
   deriveReferencePeriod,
   normalizeInvoiceDateInput,
@@ -136,23 +136,6 @@ function AppHeader({ subtitle, company }: { subtitle?: ReactNode; company: Compa
 
 function VersionFooter() {
   return <footer className="app__version-footer">{__APP_VERSION__}</footer>
-}
-
-/** Zeigt an, wie lange die laufende Analyse (Schritt 3) bereits läuft – startet bei jedem Mount neu bei 0. */
-function AnalyzeElapsed() {
-  const [elapsedSeconds, setElapsedSeconds] = useState(0)
-  useEffect(() => {
-    const start = Date.now()
-    const id = setInterval(() => setElapsedSeconds(Math.floor((Date.now() - start) / 1000)), 1000)
-    return () => clearInterval(id)
-  }, [])
-  const minutes = Math.floor(elapsedSeconds / 60)
-  const seconds = elapsedSeconds % 60
-  return (
-    <span>
-      {minutes}:{String(seconds).padStart(2, '0')} min
-    </span>
-  )
 }
 
 /**
@@ -319,23 +302,17 @@ function App() {
   const [selectedMonth, setSelectedMonth] = useState('08')
   const [selectedYear, setSelectedYear] = useState(String(CURRENT_YEAR))
 
-  const [invoiceFiles, setInvoiceFiles] = useState<File[]>([])
+  // Aus hochgeladenen Excel-Dateien bereits vollständig aufgebaute Rechnungen
+  // (rein lokale Verarbeitung, siehe excelImport.ts) – werden in Schritt 2
+  // einzeln je Rechnungsnummer angezeigt und erst beim Weitergehen in
+  // `invoices` übernommen (siehe proceedPastUpload).
+  const [excelInvoices, setExcelInvoices] = useState<Invoice[]>([])
   const [meldungFile, setMeldungFile] = useState<File | null>(null)
   const [meldungInvoiceNumbers, setMeldungInvoiceNumbers] = useState<string[] | null>(null)
   const [meldungLoading, setMeldungLoading] = useState(false)
   const [meldungError, setMeldungError] = useState<string | null>(null)
   const [showMeldungModal, setShowMeldungModal] = useState(false)
   const [invoices, setInvoices] = useState<Invoice[]>([])
-  const [analyzing, setAnalyzing] = useState(false)
-  const [analyzeProgress, setAnalyzeProgress] = useState<{ done: number; total: number; current: string } | null>(null)
-  const [retryingId, setRetryingId] = useState<string | null>(null)
-
-  // Claude ist die einzige Quelle der Rechnungsdaten. Ohne erreichbaren
-  // lokalen Proxy ist die App nicht funktionsfähig (siehe Blockbildschirm
-  // unten).
-  const [aiAvailability, setAiAvailability] = useState<AiAvailability>({ available: false, model: null })
-  const [aiAvailabilityChecked, setAiAvailabilityChecked] = useState(false)
-  const [filesByInvoiceId, setFilesByInvoiceId] = useState<Record<string, File>>({})
 
   // Hinterlegte Mustertabelle beim Start prüfen, damit ein Problem früh sichtbar wird.
   useEffect(() => {
@@ -407,19 +384,6 @@ function App() {
     saveActiveWeightMap(company, 'E', weightMaps.E, weightListStands.E)
   }, [company, weightMaps, weightListStands])
 
-  // Verfügbarkeit des lokalen Claude-Proxys prüfen.
-  useEffect(() => {
-    let cancelled = false
-    checkAiAvailability().then((result) => {
-      if (cancelled) return
-      setAiAvailability(result)
-      setAiAvailabilityChecked(true)
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
   /**
    * Ersetzt das aktive Artikel-Gewichtsmapping einer Richtung durch eine
    * hochgeladene Datei. Der neue Stand wird zusätzlich im Verlauf DIESER
@@ -484,21 +448,41 @@ function App() {
     const alreadyCaptured = finishedInvoicesByDirection[next] ?? []
     setDirection(next)
     setInvoices(alreadyCaptured)
-    setInvoiceFiles([])
     resetMeldung()
-    setStep(alreadyCaptured.length > 0 ? 4 : 1)
+    setExcelInvoices([])
+    setStep(alreadyCaptured.length > 0 ? 3 : 1)
   }
 
-  function handleInvoiceFiles(files: File[]) {
-    const pdfs = files.filter((f) => /\.pdf$/i.test(f.name))
-    if (pdfs.length < files.length) {
-      window.alert('Es können nur PDF-Dateien als Rechnungen verarbeitet werden.')
+  /**
+   * Excel-Dateien sind bereits vollständig strukturiert (siehe
+   * excelImport.ts) und werden sofort lokal geparst – jede enthaltene
+   * Rechnungsnummer erscheint direkt einzeln in der Liste in Schritt 2.
+   */
+  async function handleInvoiceFiles(files: File[]) {
+    const excelFiles = files.filter((f) => /\.xlsx$/i.test(f.name))
+    if (excelFiles.length < files.length) {
+      window.alert('Es können nur Excel-Dateien (.xlsx) als Rechnungen verarbeitet werden.')
     }
-    setInvoiceFiles((prev) => [...prev, ...pdfs])
+    for (const file of excelFiles) {
+      try {
+        const parsed = await parseExcelInvoices(file, weightMaps, selectedMonth, selectedYear)
+        setExcelInvoices((prev) => [...prev, ...parsed])
+      } catch (err) {
+        window.alert(
+          `„${file.name}“ konnte nicht gelesen werden: ${err instanceof Error ? err.message : 'Unbekannter Fehler'}`,
+        )
+      }
+    }
   }
 
-  function removeInvoiceFile(index: number) {
-    setInvoiceFiles((prev) => prev.filter((_, i) => i !== index))
+  function removeExcelInvoice(id: string) {
+    setExcelInvoices((prev) => prev.filter((inv) => inv.id !== id))
+  }
+
+  function handleRemoveExcelInvoiceWithConfirm(id: string, invoiceNumber: string) {
+    if (window.confirm(`Sind Sie sicher, dass Sie die Rechnung „${invoiceNumber}“ entfernen möchten?`)) {
+      removeExcelInvoice(id)
+    }
   }
 
   function resetMeldung() {
@@ -510,9 +494,9 @@ function App() {
   }
 
   /**
-   * Liest die Rechnungsnummern aus der "Zusammenfassenden Meldung" (optionale
-   * Validierung vor der Analyse, siehe handleGoToAnalysisStep) – Claude ist
-   * auch hier die alleinige Quelle, es gibt keine lokale PDF-Auswertung.
+   * Liest die Rechnungsnummern aus der "Zusammenfassenden Meldung" ein –
+   * ebenfalls eine Excel-Datei, rein lokal geparst (optionale Validierung
+   * vor der Prüfung, siehe handleGoToReview).
    */
   async function handleMeldungFile(file: File) {
     setMeldungFile(file)
@@ -520,8 +504,8 @@ function App() {
     setMeldungError(null)
     setMeldungLoading(true)
     try {
-      const result = await readMeldungWithAi(file)
-      setMeldungInvoiceNumbers(result.invoiceNumbers)
+      const numbers = await parseExcelMeldungInvoiceNumbers(file)
+      setMeldungInvoiceNumbers(numbers)
     } catch (err) {
       setMeldungError(err instanceof Error ? err.message : 'Unbekannter Fehler beim Auslesen der Meldung.')
     } finally {
@@ -529,72 +513,54 @@ function App() {
     }
   }
 
-  function handleRemoveInvoiceFileWithConfirm(index: number, fileName: string) {
-    if (window.confirm(`Sind Sie sicher, dass Sie die Rechnung „${fileName}“ entfernen möchten?`)) {
-      removeInvoiceFile(index)
+  /**
+   * Übernimmt die bereits geparsten Excel-Rechnungen in `invoices` und
+   * springt zur Prüfung (Schritt 3).
+   */
+  function proceedPastUpload() {
+    if (excelInvoices.length > 0) {
+      setInvoices((prev) => [...prev, ...excelInvoices])
+      setExcelInvoices([])
     }
+    setStep(3)
   }
 
   /**
    * Schritt 2 → 3: Wurde eine Meldung hochgeladen, wird zuerst anhand der
-   * Dateinamen geprüft, ob alle Meldungs-Rechnungsnummern durch eine
-   * hochgeladene Datei gedeckt sind und umgekehrt. Bei Abweichungen öffnet
-   * sich ein Hinweis-Popup statt direkt weiterzuspringen; "Weiter zur
-   * Analyse" darin erzwingt den Sprung trotzdem.
+   * exakten Rechnungsnummer geprüft, ob alle Meldungs-Rechnungsnummern durch
+   * eine geparste Excel-Rechnung gedeckt sind und umgekehrt. Bei
+   * Abweichungen öffnet sich ein Hinweis-Popup statt direkt weiterzuspringen;
+   * "Weiter zur Prüfung" darin erzwingt den Sprung trotzdem.
    */
-  function handleGoToAnalysisStep() {
+  function handleGoToReview() {
     if (meldungInvoiceNumbers && meldungInvoiceNumbers.length > 0) {
-      const comparison = compareMeldungWithFiles(meldungInvoiceNumbers, invoiceFiles)
+      const comparison = compareMeldungWithInvoices(meldungInvoiceNumbers, excelInvoices)
       if (comparison.missing.length > 0 || comparison.extra.length > 0) {
         setShowMeldungModal(true)
         return
       }
     }
-    setStep(3)
+    proceedPastUpload()
   }
 
-  // Live aus dem aktuellen Datei-/Meldungsstand abgeleitet, damit das Popup
-  // sich sofort aktualisiert, wenn dort eine Rechnung entfernt oder ergänzt
-  // wird (siehe handleGoToAnalysisStep sowie das Popup weiter unten).
+  // Live aus dem aktuellen Rechnungs-/Meldungsstand abgeleitet, damit das
+  // Popup sich sofort aktualisiert, wenn dort eine Rechnung entfernt wird
+  // (siehe handleGoToReview sowie das Popup weiter unten).
   const meldungComparison = meldungInvoiceNumbers
-    ? compareMeldungWithFiles(meldungInvoiceNumbers, invoiceFiles)
+    ? compareMeldungWithInvoices(meldungInvoiceNumbers, excelInvoices)
     : null
 
-  /** Lässt Claude alle aktuell ausgewählten Dateien auslesen und hängt die Ergebnisse an. */
-  async function runAnalysis(): Promise<void> {
-    if (!direction || invoiceFiles.length === 0) return
-    setAnalyzing(true)
-    const results: Invoice[] = []
-    const fileMap: Record<string, File> = {}
-    for (const file of invoiceFiles) {
-      setAnalyzeProgress({ done: results.length, total: invoiceFiles.length, current: file.name })
-      const invoice = await processInvoiceFile(file, direction, weightMaps, selectedMonth, selectedYear)
-      results.push(invoice)
-      fileMap[invoice.id] = file
-    }
-    setAnalyzeProgress({ done: results.length, total: invoiceFiles.length, current: '' })
-    setFilesByInvoiceId((prev) => ({ ...prev, ...fileMap }))
-    setInvoices((prev) => [...prev, ...results])
-    setInvoiceFiles([])
-    setAnalyzing(false)
-  }
-
-  async function handleAnalyze() {
-    await runAnalysis()
-    setStep(4)
-  }
-
   /**
-   * Erfasst nur manuell, ganz ohne PDF-Analyse. Der Button ist deaktiviert,
-   * sobald bereits Dateien ausgewählt wurden – beides gleichzeitig ist
+   * Erfasst nur manuell, ganz ohne Datei-Import. Der Button ist deaktiviert,
+   * sobald bereits Excel-Rechnungen geparst wurden – beides gleichzeitig ist
    * bewusst nicht möglich, da dieser Weg ausschließlich die rein manuelle
-   * Erfassung ohne vorherige PDF-Analyse startet.
+   * Erfassung startet.
    */
   function handleManualEntryOnly() {
     if (!direction) return
     const invoice = recalculateInvoice(buildManualInvoice(newId('manual'), direction), weightMaps, selectedMonth, selectedYear)
     setInvoices((prev) => [...prev, invoice])
-    setStep(4)
+    setStep(3)
   }
 
   function handleAddManualInvoice() {
@@ -606,20 +572,6 @@ function App() {
   /** Entfernt eine manuell hinzugefügte Rechnung wieder, z. B. bei versehentlichem Klick. */
   function handleRemoveInvoice(invoiceId: string) {
     setInvoices((prev) => prev.filter((inv) => inv.id !== invoiceId))
-  }
-
-  /** Liest eine einzelne Rechnung erneut mit Claude aus (nach einem Fehler). */
-  async function handleRetryInvoice(invoiceId: string) {
-    if (!direction) return
-    const file = filesByInvoiceId[invoiceId]
-    if (!file) return
-    setRetryingId(invoiceId)
-    try {
-      const refreshed = await processInvoiceFile(file, direction, weightMaps, selectedMonth, selectedYear)
-      setInvoices((prev) => prev.map((inv) => (inv.id === invoiceId ? { ...refreshed, id: invoiceId } : inv)))
-    } finally {
-      setRetryingId(null)
-    }
   }
 
   function updateInvoiceById(invoiceId: string, updater: (invoice: Invoice) => Invoice) {
@@ -722,7 +674,7 @@ function App() {
   /**
    * Bestätigt bzw. korrigiert das Bestimmungsland. Die Entscheidung wird
    * adressgenau dauerhaft gemerkt und hat bei künftigen Läufen Vorrang vor der
-   * automatischen Erkennung durch Claude.
+   * automatischen Erkennung aus der IDLD-Spalte.
    */
   function handleConfirmCountry(invoiceId: string, isoCode: string) {
     const invoice = invoices.find((inv) => inv.id === invoiceId)
@@ -858,13 +810,13 @@ function App() {
   // eine bereits abgeschlossene andere Richtung zu EINER Liste zusammen.
   const combinedInvoices = [...(otherDirection ? finishedInvoicesByDirection[otherDirection] ?? [] : []), ...invoices]
 
-  // Erscheint rechtsbündig neben der Überschrift, ausschließlich in Schritt 6,
+  // Erscheint rechtsbündig neben der Überschrift, ausschließlich in Schritt 5,
   // sobald die jeweils andere Richtung bereits (zumindest einmal)
-  // erfasst/pausiert wurde. Springt – anders als der Wechsel in Schritt 5 –
-  // immer zurück in deren Vorschau (Schritt 5), nicht zum Datei-Upload.
+  // erfasst/pausiert wurde. Springt – anders als der Wechsel in Schritt 4 –
+  // immer zurück in deren Vorschau (Schritt 4), nicht zum Datei-Upload.
   const switchBackToOtherDirectionPreviewButton =
     otherDirection && finishedInvoicesByDirection[otherDirection] ? (
-      <button type="button" onClick={() => handleSwitchDirection(5)}>
+      <button type="button" onClick={() => handleSwitchDirection(4)}>
         Zurück zu den <strong>{DIRECTION_LABEL[otherDirection]}</strong>
       </button>
     ) : null
@@ -910,13 +862,9 @@ function App() {
    * erhalten.
    */
   function handleStartNewAnalysis() {
-    setInvoiceFiles([])
     resetMeldung()
+    setExcelInvoices([])
     setInvoices([])
-    setAnalyzeProgress(null)
-    setFilesByInvoiceId({})
-    setRetryingId(null)
-    setAnalyzing(false)
     setFinishedInvoicesByDirection({})
     setDirection(null)
     setStep(1)
@@ -935,8 +883,8 @@ function App() {
     if (direction && invoices.length > 0) {
       setFinishedInvoicesByDirection((prev) => ({ ...prev, [direction]: invoices }))
     }
-    setInvoiceFiles([])
     resetMeldung()
+    setExcelInvoices([])
     setDirection(null)
     setStep(1)
   }
@@ -952,8 +900,8 @@ function App() {
     setCompany(null)
     setDirection(null)
     setInvoices([])
-    setInvoiceFiles([])
     resetMeldung()
+    setExcelInvoices([])
     setFinishedInvoicesByDirection({})
     setStep(1)
   }
@@ -963,10 +911,10 @@ function App() {
    * denselben Bezugsmonat. Der Bezugsmonat wurde bereits gewählt (Schritt 1
    * gilt für beide Richtungen gemeinsam) und wird deshalb übersprungen.
    *
-   * `targetStep` erzwingt einen festen Zielschritt (z. B. 5, wenn aus Schritt
-   * 6 in die Vorschau der anderen Richtung zurückgesprungen wird). Ohne
-   * Vorgabe wird – wie beim erstmaligen Wechsel aus Schritt 5 – automatisch
-   * Schritt 4 (bereits erfasst) oder 2 (noch nichts erfasst) gewählt.
+   * `targetStep` erzwingt einen festen Zielschritt (z. B. 4, wenn aus Schritt
+   * 5 in die Vorschau der anderen Richtung zurückgesprungen wird). Ohne
+   * Vorgabe wird – wie beim erstmaligen Wechsel aus Schritt 4 – automatisch
+   * Schritt 3 (bereits erfasst) oder 2 (noch nichts erfasst) gewählt.
    */
   function handleSwitchDirection(targetStep?: number) {
     if (!direction || !otherDirection) return
@@ -978,9 +926,9 @@ function App() {
     const alreadyCaptured = finishedInvoicesByDirection[otherDirection] ?? []
     setDirection(otherDirection)
     setInvoices(alreadyCaptured)
-    setInvoiceFiles([])
     resetMeldung()
-    setStep(targetStep ?? (alreadyCaptured.length > 0 ? 4 : 2))
+    setExcelInvoices([])
+    setStep(targetStep ?? (alreadyCaptured.length > 0 ? 3 : 2))
   }
 
   /**
@@ -995,14 +943,14 @@ function App() {
     )
     if (shouldClear) {
       setInvoices([])
-      setInvoiceFiles([])
       resetMeldung()
+      setExcelInvoices([])
     }
     setStep(2)
   }
 
   /**
-   * Springt nur dann zur Vorschau (Schritt 5), wenn keine der erfassten
+   * Springt nur dann zur Vorschau (Schritt 4), wenn keine der erfassten
    * Rechnungen (Ein- oder Ausgang) noch auf Status "Fehler" steht – sonst
    * bleibt es bei einer Fehlermeldung, statt stillschweigend weiterzuleiten.
    */
@@ -1016,7 +964,7 @@ function App() {
       )
       return
     }
-    setStep(5)
+    setStep(4)
   }
 
   async function handleExport() {
@@ -1054,44 +1002,6 @@ function App() {
         '--accent-text': COMPANY_THEME[company].accentText,
       } as CSSProperties)
     : undefined
-
-  if (!aiAvailabilityChecked) {
-    return (
-      <div className="app">
-        <AppHeader company={company} />
-        <div className="app__body">
-          <main className="app__main">
-            <p>Prüfe Verbindung zu Claude…</p>
-          </main>
-        </div>
-        <VersionFooter />
-      </div>
-    )
-  }
-
-  if (!aiAvailability.available) {
-    return (
-      <div className="app">
-        <AppHeader company={company} />
-        <div className="app__body">
-          <main className="app__main">
-            <section className="ai-blocked">
-              <h2>Keine Verbindung zu Claude</h2>
-              <p>
-                Claude liest die Rechnungen aus und ist die alleinige Quelle der Rechnungsdaten – es gibt kein
-                lokales Fallback. Ohne erreichbaren Proxy mit gültigem API-Key ist die App nicht funktionsfähig.
-              </p>
-              <p className="hint">
-                Bitte <code>ANTHROPIC_API_KEY</code> in der <code>.env</code> hinterlegen und den Proxy starten
-                (<code>npm start</code>), dann diese Seite neu laden.
-              </p>
-            </section>
-          </main>
-        </div>
-        <VersionFooter />
-      </div>
-    )
-  }
 
   if (!company) {
     return (
@@ -1210,26 +1120,31 @@ function App() {
         {step === 2 && (
           <section>
             <FileDropzone
-              label="Rechnungen (PDF, Mehrfachauswahl möglich)"
-              accept=".pdf"
+              label="Rechnungen (Excel, Mehrfachauswahl möglich)"
+              accept=".xlsx"
               multiple
               onFiles={handleInvoiceFiles}
               hint="Alle Rechnungen müssen zum Bezugsmonat gehören – das wird geprüft."
             />
-            <ul className="file-list">
-              {invoiceFiles.map((f, i) => (
-                <li key={`${f.name}-${i}`}>
-                  <span>{f.name}</span>
-                  <button type="button" onClick={() => removeInvoiceFile(i)}>
-                    entfernen
-                  </button>
-                </li>
-              ))}
-            </ul>
+            {excelInvoices.length > 0 && (
+              <>
+                <p className="hint">{excelInvoices.length} Rechnung(en) erkannt:</p>
+                <ul className="file-list">
+                  {excelInvoices.map((inv) => (
+                    <li key={inv.id}>
+                      <span>{inv.invoiceNumber}</span>
+                      <button type="button" onClick={() => removeExcelInvoice(inv.id)}>
+                        entfernen
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
             <div className="meldung-upload">
               <UploadButton
-                label="Zusammenfassende Meldung (PDF) zur Validierung hochladen"
-                accept=".pdf"
+                label="Zusammenfassende Meldung (Excel) zur Validierung hochladen"
+                accept=".xlsx"
                 onFile={handleMeldungFile}
               />
               {meldungLoading && <p className="hint">Meldung wird ausgelesen…</p>}
@@ -1250,14 +1165,14 @@ function App() {
               <button
                 type="button"
                 className="button--primary-solid"
-                disabled={invoiceFiles.length === 0}
-                onClick={handleGoToAnalysisStep}
+                disabled={excelInvoices.length === 0}
+                onClick={handleGoToReview}
               >
                 Weiter
               </button>
             </div>
             <div className="step-actions">
-              <button type="button" disabled={invoiceFiles.length > 0} onClick={handleManualEntryOnly}>
+              <button type="button" disabled={excelInvoices.length > 0} onClick={handleManualEntryOnly}>
                 Nur manuelle Eingabe
               </button>
             </div>
@@ -1268,18 +1183,18 @@ function App() {
                   {meldungComparison.extra.length > 0 && (
                     <div className="modal__section">
                       <p>
-                        Diese hochgeladene(n) Rechnung(en) {meldungComparison.extra.length === 1 ? 'steht' : 'stehen'}{' '}
+                        Diese geparste(n) Rechnung(en) {meldungComparison.extra.length === 1 ? 'steht' : 'stehen'}{' '}
                         nicht auf der Meldeliste:
                       </p>
                       <ul className="meldung-list">
                         {meldungComparison.extra.map((entry) => (
-                          <li key={entry.fileIndex}>
-                            <span>{entry.fileName}</span>
+                          <li key={entry.invoiceId}>
+                            <span>{entry.invoiceNumber}</span>
                             <button
                               type="button"
                               className="meldung-list__remove"
                               title="Rechnung entfernen"
-                              onClick={() => handleRemoveInvoiceFileWithConfirm(entry.fileIndex, entry.fileName)}
+                              onClick={() => handleRemoveExcelInvoiceWithConfirm(entry.invoiceId, entry.invoiceNumber)}
                             >
                               ×
                             </button>
@@ -1295,7 +1210,6 @@ function App() {
                         {meldungComparison.missing.map((number) => (
                           <li key={number}>
                             <span>{number}</span>
-                            <UploadButton label="hinzufügen" accept=".pdf" onFile={(file) => handleInvoiceFiles([file])} />
                           </li>
                         ))}
                       </ul>
@@ -1307,10 +1221,10 @@ function App() {
                       className="button--primary-solid"
                       onClick={() => {
                         setShowMeldungModal(false)
-                        setStep(3)
+                        proceedPastUpload()
                       }}
                     >
-                      Weiter zur Analyse
+                      Weiter zur Prüfung
                     </button>
                   </div>
                 </div>
@@ -1321,37 +1235,13 @@ function App() {
 
         {step === 3 && (
           <section>
-            <p>
-              {invoiceFiles.length} Rechnung(en) für den Bezugsmonat {selectedMonth}-{selectedYear}.
-            </p>
-            {analyzing && analyzeProgress && (
-              <p>
-                Analysiere {analyzeProgress.done + 1} / {analyzeProgress.total}
-                {analyzeProgress.current ? ` – ${analyzeProgress.current}` : ''} · <AnalyzeElapsed />
-              </p>
-            )}
-            <div className="step-actions">
-              <button type="button" onClick={() => setStep(2)} disabled={analyzing}>
-                Zurück
-              </button>
-              <button type="button" className="button--primary-solid" onClick={handleAnalyze} disabled={analyzing}>
-                Analyse starten
-              </button>
-            </div>
-          </section>
-        )}
-
-        {step === 4 && (
-          <section>
             <ReviewTable
               invoices={invoices}
-              retryingId={retryingId}
               onEditPosition={handleEditPosition}
               onEditInvoice={handleEditInvoice}
               onConfirmProductMapping={handleConfirmProductMapping}
               onConfirmCountry={handleConfirmCountry}
               onNegativeDecision={handleNegativeDecision}
-              onRetryInvoice={handleRetryInvoice}
               onAddPosition={handleAddPosition}
               onRemovePosition={handleRemovePosition}
               onAcceptWeightTolerance={handleAcceptWeightTolerance}
@@ -1371,14 +1261,14 @@ function App() {
           </section>
         )}
 
-        {step === 5 && (
+        {step === 4 && (
           <section>
             <PreviewTable invoices={combinedInvoices} />
             <div className="step-actions">
-              <button type="button" onClick={() => setStep(4)}>
+              <button type="button" onClick={() => setStep(3)}>
                 Zurück zur Prüfung
               </button>
-              <button type="button" className="button--primary-solid" onClick={() => setStep(6)}>
+              <button type="button" className="button--primary-solid" onClick={() => setStep(5)}>
                 Weiter zum Export
               </button>
             </div>
@@ -1392,7 +1282,7 @@ function App() {
           </section>
         )}
 
-        {step === 6 && (
+        {step === 5 && (
           <section>
             {switchBackToOtherDirectionPreviewButton && (
               <div className="step-header">{switchBackToOtherDirectionPreviewButton}</div>
@@ -1406,7 +1296,7 @@ function App() {
               canExport={canExport}
             />
             <div className="step-actions">
-              <button type="button" onClick={() => setStep(5)}>
+              <button type="button" onClick={() => setStep(4)}>
                 Zurück
               </button>
               <button type="button" className="button--primary-solid" onClick={handleStartNewAnalysis}>

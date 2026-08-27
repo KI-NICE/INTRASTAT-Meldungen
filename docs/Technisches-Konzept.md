@@ -1,71 +1,92 @@
 # Technisches Konzept – Intrastat-Meldungs-App
 
-Stand: 20.08.2026 (überarbeitet: Claude ist jetzt die alleinige Quelle der
-Rechnungsdaten – das bisherige deterministische PDF-Auslesen inkl. OCR wurde
-ausgebaut, es gibt kein lokales Fallback mehr).
+Stand: 27.08.2026 (überarbeitet: Claude/Anthropic-API vollständig entfernt –
+Rechnungen und die "Zusammenfassende Meldung" werden jetzt als strukturierte
+Excel-Dateien eingelesen, komplett lokal im Browser. Die App ist dadurch eine
+rein statische Anwendung ohne Server, API-Key oder externe Anbindung und lässt
+sich z. B. über GitHub Pages hosten.)
 
-## 0. Claude als alleinige Quelle der Rechnungsdaten
+## 0. Excel als Datenquelle, keine externe Anbindung mehr
 
-Bis Version 434dc5e wertete die App Rechnungen selbst aus (Fettdruck- und
-Spaltenerkennung über `pdf.js`, OCR-Fallback über `tesseract.js`) und holte
-optional eine KI-Zweitmeinung ein, gegen die abgeglichen wurde. Diese
-Architektur wurde bewusst aufgegeben:
+Bis zu diesem Stand las Claude (Anthropic-API) jede Rechnung aus einer PDF
+vollständig aus; das erforderte einen lokalen Proxy-Server, der den API-Key
+serverseitig hielt, und machte die App zwingend von einer erreichbaren
+externen API abhängig. Diese Architektur wurde bewusst aufgegeben:
 
-- Es gibt **keine eigene PDF-Textextraktion mehr** (`pdf.js`, `documentText.ts`,
-  `invoiceParser.ts` sind entfernt).
-- Es gibt **kein OCR mehr** (`tesseract.js` ist entfernt).
-- Claude liest jede Rechnung vollständig und verbindlich aus. Es gibt nichts,
-  gegen das abgeglichen werden könnte – Abweichungen, Diskrepanz-Auflösung
-  und "eigenen Wert behalten/KI-Wert übernehmen" (`aiCompare.ts`, `aiApply.ts`)
-  entfallen ersatzlos.
-- Ist der lokale Proxy (`server/index.mjs`) nicht erreichbar oder kein
-  `ANTHROPIC_API_KEY` hinterlegt, ist die App **nicht funktionsfähig** – sie
-  zeigt von Anfang an nur einen Blockbildschirm. Es gibt kein lokales
-  Fallback.
+- Es gibt **keine PDF-Auswertung und keine KI-Anbindung mehr** (`server/`,
+  `aiVerification.ts`, `aiInvoiceBuilder.buildInvoiceFromAi` und die
+  MTZ-Artikel-Zuordnungstabelle für den PDF-Weg sind entfernt).
+- Rechnungen werden stattdessen als **strukturierte Excel-Datei** eingelesen
+  (`lib/excelImport.ts`) – eine Zeile je Rechnungsposition, mehrere Zeilen je
+  Rechnungsnummer, siehe Spaltenformat in Abschnitt 1. Das Einlesen ist
+  synchron und lokal, kein Netzwerkzugriff nötig.
+- Die "Zusammenfassende Meldung" (optionale Validierung vor der Prüfung, ob
+  alle erwarteten Rechnungsnummern erfasst wurden) wird ebenfalls als
+  Excel-Datei eingelesen (`lib/excelImport.parseExcelMeldungInvoiceNumbers`),
+  nicht mehr als PDF über Claude.
+- Rechnungen lassen sich weiterhin vollständig **manuell erfassen**
+  (`aiInvoiceBuilder.buildManualInvoice`/`buildManualPosition`), unverändert
+  gegenüber dem bisherigen Verhalten.
+- Die App startet ohne jede Blockbedingung – es gibt keinen Verfügbarkeits-
+  Check mehr, den ein fehlender Server oder Key scheitern lassen könnte.
 
-Die fachlichen Erkennungsregeln (Position, Menge, Rechnungsdatum,
-Bestimmungsland, Netto-Gesamtgewicht, Frachtkosten-Position 090025, …) sind
-unverändert gültig – sie stehen jetzt als Anweisungen im `SYSTEM_PROMPT` und
-im JSON-Schema des Werkzeugaufrufs (`RESULT_TOOL`) in `server/index.mjs`,
-nicht mehr als Regex-/Layout-Heuristiken im Browser.
+Die fachlichen Berechnungsregeln (Rundung, Toleranz, statistischer Wert,
+Frachtkosten-Umlage, Materialteuerungszuschlag-Zurechnung, …) sind
+unverändert gültig – sie werden nur nicht mehr über einen KI-Prompt
+formuliert, sondern direkt im Code (`lib/excelImport.ts`, `lib/processing.ts`,
+`lib/validation.ts`).
 
-| Thema | Festlegung |
-|---|---|
-| Rechnungsnummer | Oben rechts **fett** neben der Überschrift `RECHNUNG` bzw. `INVOICE`. |
-| Rechnungsdatum / Bezugsmonat | Feld `vom:` (deutsch) bzw. `dated:` (englisch). `Ihr Auftrag vom:`, `your order dated:`, `Bestellung vom:` und `Lieferschein vom:` werden ausgeschlossen. |
-| Position | Linksbündige **fette** Ganzzahl (`10`, `20`, …); rechts davon beginnt die Artikelbezeichnung. |
-| Menge | Ausschließlich die **fett** gesetzte Zahl (`1000 Stück`, `252 Stück`, englisch `200 pcs`). Preise pro 100 werden nie als Menge gelesen. |
-| Positionsbetrag | Wert der Betragsspalte (`Betrag` deutsch, `Dly.date` englisch). |
-| Bestimmungsland (Spalte F) | **Länderkennzeichen vor der Postleitzahl** der Lieferadresse, ersatzweise der Auftragsadresse, als ISO-3166-1-Alpha-2-Code. Claude gibt zusätzlich die verwendete Adresse als Volltext zurück (`destinationAddressText`), damit Korrekturen adressgenau gespeichert werden können. |
-| USt-IdNr.-Abgleich | Das Länderkürzel muss zum Präfix der USt-IdNr. des Warenempfängers passen. Bei Abweichung sticht die USt-IdNr. das von Claude gelesene Land aus (`countryCodes.crosscheckDestinationCountryWithVatId`); eine manuell bestätigte Auswahl bleibt davon unberührt. |
-| Mitdenkendes Länder-Mapping | Eine für genau die von Claude zurückgegebene Adresse gelernte Zuordnung hat Vorrang vor dem von Claude gelesenen Code (`aiInvoiceBuilder.resolveDestinationCountry`). Jede Bestätigung/Korrektur wird adressgenau dauerhaft gemerkt. |
-| Frachtkosten-Position (Artikelnummer 090025) | Fett gesetzte Artikelnummer unter der Spaltenüberschrift „Artikelangaben"/„Part description", über der Artikelbezeichnung. Wird nicht als eigene Intrastat-Zeile gemeldet; ihr Betrag wird wie ausgewiesene Frachtkosten anteilig nach Wertanteil auf die übrigen Positionen verteilt. |
-| Flaschenartikel | Bei `Zyl.`, `Zylinderflasche`, `Zylk.`, `FL`, `VK`, `Vierkant` steht das Artikelgewicht in der Produktbeschreibung (`Gew.:20 g`), von Claude als Teil der Bezeichnung wiedergegeben. Dieses Gewicht wird direkt verwendet und **nicht** über die Gewichtsliste ermittelt. |
-| Produktzuordnung | Tokenweiser Abgleich des Bezeichnungsanfangs mit vereinheitlichten Schreibweisen (`1,0 L` = `1.0L`), ausgeschriebenes „Druckpumpzerstäuber" = „DPZ". Längster passender Eintrag gewinnt. |
-| Manuelle Gewichtskorrektur | Ist kein Treffer eindeutig oder die hinterlegte Gewichtsliste veraltet, lässt sich das Gewicht je Stück direkt eintragen (nicht nur aus der Gewichtsliste wählen). Die Korrektur wird sowohl über die Artikelnummer als auch über die Produktbezeichnung dauerhaft gelernt (`mappingStore.saveArticleWeightMapping`/`saveManualMapping`) und schlägt bei künftigen Zuordnungen VOR den Treffern in der Gewichtsliste zu. |
-| Netto-Gesamtgewicht | Fußzeile hinter der Sternchen-Trennlinie, `Net weight:` bzw. `Netto:`. |
-| Sprache | Deutsche und englische Rechnungen werden von Claude automatisch unterschieden. |
-| Unsichere Felder | Claude setzt nicht eindeutig lesbare Felder selbst auf `null` und benennt sie in `uncertainFields` – es wird nichts geraten. Diese Felder erscheinen als Warnung in der Prüfansicht. |
-| Fehler beim Auslesen | Schlägt das Auslesen einer Rechnung fehl (Netzwerk-/API-Fehler), bleibt nur diese Rechnung leer und gesperrt; „Erneut versuchen" liest sie neu ein. |
-| Grunddaten | Gewichtsliste (`src/data/gewichtsliste.ts`) und Mustertabelle (`src/assets/Mustertabelle.xlsx`) sind **fest im Anwendungspaket hinterlegt** und werden nicht hochgeladen. |
+## 1. Format der Rechnungs-Excel-Datei
 
-## 0b. Architektur des Claude-Zugriffs
+| Spalte | Kürzel | Bedeutung |
+|---|---|---|
+| A | RENR | Rechnungsnummer (mehrere Zeilen je Rechnung = Positionen) |
+| B | RGDA | Rechnungsdatum, Format `JJJJMMTT` |
+| C | IDLD | Länderkennung der USt-IdNr./Bestimmungsland (`AT`, `NL`, `FR` … ; `99` = Drittland) |
+| D | IDNR | USt-IdNr. des Kunden ohne Länderpräfix (bei Drittland leer) |
+| E | AFHP | Positionsnummer innerhalb der Rechnung (`10`, `20`, `30`, …) |
+| F | TENR | Teile-/Artikelnummer |
+| G/H | BEZG | Artikelbezeichnung (zwei Zeilen) |
+| I | MENG | Menge in Stück |
+| J | – | Positionswert in EUR |
+| K | GWNE | Nettogewicht je Stück – **ignoriert**, eigene Gewichtsliste im Tool maßgeblich |
+| L | KDNR | Kundennummer |
+| M/N | NAME | Kundenname (zwei Zeilen) |
+| O | STRA | Straße |
+| P | WORT | Ort |
+| Q | ZOTA | Zolltarifnummer (8-stellig) |
 
-| Aspekt | Festlegung |
-|---|---|
-| Rolle | Alleinige Quelle aller Rechnungsdaten. Keine Zweitmeinung, kein Abgleich. |
-| Übertragene Daten | Die vollständige Rechnungs-PDF. |
-| Architektur | Lokaler Proxy (`server/index.mjs`), der den API-Key aus der `.env` liest und die gebaute App ausliefert. Der Key gelangt nie in das Browser-Bundle. |
-| Standardzustand | **Zwingend erforderlich.** Ohne erreichbaren Proxy mit gültigem Key zeigt die App nur einen Blockbildschirm (`App.tsx`, Zustand `aiAvailability.available === false`). |
-| Modellwahl | Über `ANTHROPIC_MODEL` konfigurierbar; ohne Angabe wählt der Proxy das neueste verfügbare Sonnet-Modell des Kontos. |
-| Strukturierte Antwort | Erzwungener Werkzeugaufruf (`tool_choice`) mit JSON-Schema (`RESULT_TOOL`), damit die Antwort maschinell weiterverarbeitet werden kann. |
-| Verfügbarkeit | Erfordert ein Hosting-Ziel mit Node-Server-Betrieb; ein reines Static-Hosting wie GitHub Pages scheidet aus, da dort kein Proxy laufen kann. |
-| Test ohne Datenübertragung | `e2e/mock-anthropic.mjs` bildet die API nach, sodass der gesamte Weg ohne echten Key und ohne echte Rechnungsdaten geprüft werden kann. |
+Fehlende Angaben (Zolltarifnummer, Gesamt-Nettogewicht, Bestimmungsland bei
+Drittland `99` mangels Lieferadresse in der Datei) bleiben leer und werden in
+der Prüfansicht manuell nachgetragen – wie bei manuell erfassten Rechnungen.
 
-## 1. Bestätigte fachliche Regeln (Zusammenfassung der Antworten)
+**Sonderpositionen** (Artikelnummer beginnt mit `09`, keine eigene
+Intrastat-Zeile, siehe `excelImport.isNonMerchandiseArticleNumber`):
 
-Diese Regeln sind unabhängig davon, wer die Rechnung liest, weiterhin
-gültig – sie betreffen die Berechnung und den Export, nicht das Auslesen:
+- Frachtkosten/Sonderkosten (z. B. `090024`, `090025`) werden anteilig nach
+  Wertanteil auf die übrigen Positionen der Rechnung umgelegt.
+- Materialteuerungszuschläge (bestätigte Artikelnummern `090038`, `090039`,
+  `090040`, `090041`, `090042`, `090044`, `090045`, siehe
+  `excelImport.MTZ_ARTICLE_NUMBERS`) werden **immer der unmittelbar
+  vorangehenden Position** zugerechnet (`excelImport.attributeMtzToPreviousPosition`)
+  – unabhängig davon, zu welchem Artikel sie inhaltlich gehören und ohne
+  Verifikation über eine Zuordnungstabelle, da die Positionsreihenfolge in
+  der Praxis nicht zuverlässig alternierend ist.
+
+## 2. Format der "Zusammenfassenden Meldung" (Excel)
+
+Die Spalten "Beleg-Nr." und "Text" werden **anhand der Kopfzeile** gesucht
+(nicht anhand fester Positionen), da das genaue Format noch nicht an einer
+echten Beispieldatei verifiziert wurde. Eine Zeile zählt als Rechnung, wenn
+ihr Buchungstext "rechnung" enthält (deckt "Ausgangsrechnung" und
+"Eingangsrechnung" ab); Zeilen wie "Skonto" oder "Gutschrift" werden dadurch
+automatisch ausgeschlossen. Werden die Spalten nicht gefunden, meldet die App
+einen Fehler statt stillschweigend falsche Ergebnisse zu liefern.
+
+## 3. Bestätigte fachliche Regeln (Zusammenfassung der Antworten)
+
+Diese Regeln betreffen die Berechnung und den Export, unabhängig vom
+Datenformat der Quelle:
 
 | # | Regel | Entscheidung |
 |---|---|---|
@@ -76,14 +97,14 @@ gültig – sie betreffen die Berechnung und den Export, nicht das Auslesen:
 | 5 | Statistischer Wert (O) | Positionswert **+ anteiliger 4-%-Zuschlag** = 104 % des Positionswerts, Zuschlag wertanteilig verteilt |
 | 6 | Rundung statistischer Wert | Immer aufrunden auf volle EUR |
 | 7 | Zeilenbildung | Jede Rechnungsposition = eigene Excel-Zeile, keine Zusammenfassung |
-| 8 | Frachtkosten | Anteilig auf Spalte N (Rechnungsbetrag) nach Wertanteil der Position verteilen; schließt Frachtkosten-Positionen (Artikelnummer 090025) mit ein |
-| 8b | Gutschriften/Storno/Rabatte/negative Positionen | **Nie automatisch verarbeiten** – App erkennt sie (auch über Claudes `isCreditOrDiscount`-Flag), verlangt aber in jedem Fall eine manuelle Entscheidung |
+| 8 | Frachtkosten | Anteilig auf Spalte N (Rechnungsbetrag) nach Wertanteil der Position verteilen; schließt alle "09"-Sonderpositionen mit ein |
+| 8b | Gutschriften/Storno/Rabatte/negative Positionen | **Nie automatisch verarbeiten** – App erkennt sie (negativer Betrag), verlangt aber in jedem Fall eine manuelle Entscheidung |
 | 9 | Spalte M | Immer ganze Stückzahl (Rundung falls nötig), nur bei Warennummer `39233010` |
-| 10 | USt-IdNr. (P) | „Ihre USt-IdNr." = USt-IdNr. des Warenempfängers, immer verwendbar (nur Leerzeichen entfernen); muss zum Bestimmungsland passen (siehe Abschnitt 0) |
+| 10 | USt-IdNr. (P) | USt-IdNr. des Warenempfängers (Länderkennung + IDNR verkettet); muss zum Bestimmungsland passen (siehe Abschnitt 0) |
 | 11 | Mustertabelle-Struktur | Leere Struktur inkl. Kopfzeile bleibt erhalten (Zeile 1 = Spaltenüberschriften, Zeile 2 = Erläuterungszeile); Datenzeilen ab Zeile 3 |
 | 12 | Produktmapping | Bestätigte Zuordnungen werden **dauerhaft lokal** (Browser-Speicher) gespeichert und beim nächsten Durchlauf vorgeschlagen |
-| 13 | Verarbeitungsort Auslesen | Claude (Anthropic-API) – zwingend, kein lokales Fallback |
-| 14 | Verarbeitungsort Berechnung | Produktzuordnung, Gewichts-/Betragsberechnungen, Validierung und Excel-Erstellung laufen weiterhin ausschließlich im Browser |
+| 13 | Verarbeitungsort Einlesen | Lokal im Browser (Excel-Import bzw. manuelle Erfassung), keine externe Anbindung |
+| 14 | Verarbeitungsort Berechnung | Produktzuordnung, Gewichts-/Betragsberechnungen, Validierung und Excel-Erstellung laufen ausschließlich im Browser |
 
 **Wichtiger Hinweis zu Regel 3/4 (Transparenzpunkt):** Da jede Position einzeln
 aufgerundet wird, kann die Summe der gerundeten Positionsgewichte durch
@@ -91,20 +112,20 @@ Rundungsdrift höher liegen als das Netto-Gesamtgewicht der Rechnung. Bei
 Toleranz 0 kg führt das in der Praxis häufiger zu gesperrten Rechnungen. Das
 ist laut Vorgabe so gewollt ("Werte dürfen nicht geraten werden").
 
-## 2. Architektur
+## 4. Architektur
 
-Single-Page-App (React + TypeScript + Vite) mit zwingend erforderlichem
-lokalen Proxy für die Claude-Anbindung – nicht mehr ohne Weiteres als rein
-statische Seite betreibbar.
+Rein statische Single-Page-App (React + TypeScript + Vite) – kein Server,
+kein API-Key, keine externe Anbindung. Lässt sich als reiner `dist/`-Ordner
+mit jedem beliebigen Webserver ausliefern, z. B. GitHub Pages.
 
 - **Build:** Vite + React + TypeScript
-- **Rechnungs-Auslesen:** Anthropic-API (Claude), über `server/index.mjs`
+- **Rechnungs-Einlesen:** `exceljs`, lokal im Browser (`lib/excelImport.ts`)
 - **DOCX-Parsing (Gewichtsliste, optionaler Ersatz):** `mammoth`
 - **XLSX Import/Export:** `exceljs` (erhält Formatierung, Zahlenformate, Zellentypen der Mustertabelle)
-- **State:** React Context/Reducer, kein weiteres Backend
+- **State:** React-Zustand, kein weiteres Backend
 - **Persistenz:** `localStorage` ausschließlich für bestätigte Produkt- und Länder-Zuordnungen. Rechnungsdaten selbst werden nicht dauerhaft gespeichert.
 
-## 3. Datenmodell (vereinfacht, TypeScript-Typen)
+## 5. Datenmodell (vereinfacht, TypeScript-Typen)
 
 ```ts
 type Invoice = {
@@ -112,18 +133,16 @@ type Invoice = {
   fileName: string
   language: 'de' | 'en'
   invoiceNumber?: string
-  invoiceDateRaw?: string        // von Claude gelesenes "Vom:"-Datum
+  invoiceDateRaw?: string        // aus RGDA (JJJJMMTT) bzw. manuell erfasst
   referenceMonth?: string        // daraus abgeleitet, Format MM
   destinationCountry?: DestinationCountryInfo
-  destinationAddressText?: string   // von Claude zurückgegebene Adresse (für Lernverhalten)
-  destinationAddressKind?: 'lieferadresse' | 'auftragsadresse' | 'empfaengeradresse'
+  destinationAddressText?: string   // Kundenadresse (für Lernverhalten)
   vatId?: string
-  netWeightTotal?: number        // kg, laut Rechnung
+  netWeightTotal?: number        // kg, laut Rechnung (bei Excel-Import zunächst leer)
   freightCost?: number
   positions: InvoicePosition[]
-  status: 'pending' | 'analyzing' | 'ok' | 'warning' | 'error' | 'locked'
+  status: 'pending' | 'ok' | 'warning' | 'error'
   issues: ValidationIssue[]
-  ai?: AiExtractionInfo          // Status des Auslesens durch Claude
 }
 
 type InvoicePosition = {
@@ -135,8 +154,9 @@ type InvoicePosition = {
   amountEur?: number              // Betrag laut Rechnung (EUR)
   articleNumberRaw?: string       // z. B. "090025" für Frachtkosten-Positionen
   isTransportCost: boolean
+  isMtzSurcharge: boolean
   isCreditOrDiscountOrNegative: boolean
-  matchedProduct?: ProductMatch   // Gewichtsliste-Zuordnung (lokal, nicht von Claude)
+  productMatch?: ProductMatch     // Gewichtsliste-Zuordnung
   calculatedWeightKgRounded?: number
   amountEurRounded?: number
   statisticalValueEurRounded?: number
@@ -144,69 +164,60 @@ type InvoicePosition = {
   issues: ValidationIssue[]
   status: 'ok' | 'warning' | 'error'
 }
-
-type AiExtractionInfo = {
-  status: 'fertig' | 'fehler'
-  model?: string
-  uncertainFields: string[]
-  error?: string
-}
 ```
 
-## 4. Verarbeitungsschritte
+## 6. Verarbeitungsschritte
 
 1. **Upload & Parsen der Mustertabelle** – Header (Zeile 1) und Hinweiszeile (Zeile 2) sowie Zellformate werden geladen und für den späteren Export im Speicher gehalten, nicht verändert.
 2. **Bezugsmonat wählen** – MM (+ Jahr intern für den Dateinamen/Plausibilitätsprüfung).
-3. **PDF-Upload (Mehrfachauswahl/Drag&Drop)**.
-4. **Auslesen durch Claude** – je Datei wird die vollständige PDF an den lokalen Proxy und von dort an die Anthropic-API übertragen (`readInvoiceWithAi`). Schlägt das fehl, bleibt die Rechnung leer und gesperrt (`buildInvoiceFromAi` mit `error`), ohne die übrige Verarbeitung zu blockieren.
-5. **Rechnungsmodell aufbauen** (`aiInvoiceBuilder.buildInvoiceFromAi`) – Kopf- und Positionsfelder aus den von Claude gelesenen Daten übernehmen; Bezugsmonat aus dem Rechnungsdatum ableiten; Bestimmungsland über gelernte Adress-Zuordnung bzw. Claudes Code bestimmen.
-6. **USt-IdNr.-Abgleich** (`countryCodes.crosscheckDestinationCountryWithVatId`) – weicht das Länderpräfix der USt-IdNr. vom Bestimmungsland ab, gewinnt die USt-IdNr.
-7. **Produktzuordnung** (`productMatcher.matchProduct`) – exakter Treffer → normalisierter Treffer → manuell bestätigte Zuordnung (Sitzung oder dauerhaft) → Präfix-Treffer über den Bezeichnungsanfang → sonst nur Vorschläge zur Auswahl.
-8. **Berechnungen** (`calculations.ts`):
+3. **Excel-Upload** – die Rechnungs-Excel-Datei wird sofort und vollständig lokal geparst (`excelImport.parseExcelInvoices`): Zeilen werden nach Rechnungsnummer gruppiert, Sonderpositionen klassifiziert (Frachtkosten-Umlage bzw. MTZ-Zurechnung), Bestimmungsland aus IDLD abgeleitet. Optional: Excel-Upload der "Zusammenfassenden Meldung" zum Abgleich der Rechnungsnummern.
+4. **Produktzuordnung** (`productMatcher.matchProduct`) – exakter Treffer → normalisierter Treffer → manuell bestätigte Zuordnung (Sitzung oder dauerhaft) → Präfix-Treffer über den Bezeichnungsanfang → sonst nur Vorschläge zur Auswahl.
+5. **Berechnungen** (`calculations.ts`):
    - Gewicht je Position = Einzelgewicht (g) × Menge ÷ 1000, je Position aufgerundet auf volle kg.
    - Gewichtssumme prüfen gegen Netto-Gesamtgewicht (Toleranz 0 kg).
-   - Rechnungsbetrag je Position: Frachtkosten **und** der Betrag aller Frachtkosten-Positionen (Artikelnummer 090025) anteilig nach Wertanteil aufschlagen, je Position auf volle EUR aufgerundet (Spalte N).
+   - Rechnungsbetrag je Position: Frachtkosten und der Betrag aller "09"-Sonderpositionen anteilig nach Wertanteil aufschlagen, je Position auf volle EUR aufgerundet (Spalte N).
    - Statistischer Wert je Position: 4-%-Zuschlag auf den gesamten Warenwert wertanteilig verteilt, je Position aufgerundet auf volle EUR (Spalte O).
-   - Gutschrift-/Storno-/Rabatt-Positionen (negativer Betrag, Schlüsselwörter oder Claudes `isCreditOrDiscount`-Flag) werden erkannt und **immer** zur manuellen Entscheidung markiert.
-9. **Validierung** (`validation.ts`) – blockiert den Export, solange offene Fehler bestehen; Frachtkosten-Positionen werden von der Warenpositions-Validierung ausgenommen.
-10. **Prüfansicht** – tabellarische Übersicht, manuelle Korrekturen farblich gekennzeichnet, Änderungen protokolliert (Originalwert/neuer Wert/Zeitstempel, nur intern).
-11. **Export** – `exceljs` schreibt in eine Kopie der Mustertabelle ab Zeile 3 (Frachtkosten-Positionen und Gutschriften/Storno werden nicht mitgeschrieben); Dateiname `MM-JJJJ.xlsx`.
+   - Gutschrift-/Storno-/Rabatt-Positionen (negativer Betrag) werden erkannt und **immer** zur manuellen Entscheidung markiert.
+6. **Validierung** (`validation.ts`) – blockiert den Export, solange offene Fehler bestehen; "09"-Sonderpositionen werden von der Warenpositions-Validierung ausgenommen.
+7. **Prüfansicht** – tabellarische Übersicht, manuelle Korrekturen farblich gekennzeichnet, Änderungen protokolliert (Originalwert/neuer Wert/Zeitstempel, nur intern).
+8. **Export** – `exceljs` schreibt in eine Kopie der Mustertabelle ab Zeile 3 ("09"-Sonderpositionen und Gutschriften/Storno werden nicht mitgeschrieben); Dateiname `MM-JJJJ.xlsx`.
 
-## 5. Bibliotheken
+## 7. Bibliotheken
 
 | Zweck | Bibliothek |
 |---|---|
-| Rechnungs-Auslesen | Anthropic-API (Claude), über `server/index.mjs` |
+| Rechnungs-Einlesen | exceljs, lokal im Browser |
 | DOCX-Text (Gewichtsliste, optionaler Ersatz) | mammoth |
 | XLSX Lesen/Schreiben | exceljs |
 | UI | React + Vite |
 | Tests | Vitest |
 | Ähnlichkeitsvergleich (Produkt-Vorschläge) | eigene Levenshtein-Implementierung |
 
-## 6. Datenschutz
+## 8. Datenschutz
 
-Claude liest **jede** hochgeladene Rechnung vollständig aus – die vollständige
-PDF wird dafür immer an die Anthropic-API übertragen; das ist keine optionale
-Funktion mehr. Alle übrigen Verarbeitungsschritte (Produktzuordnung,
-Berechnungen, Excel-Erstellung) laufen weiterhin im Browser, ohne zusätzliche
-Datenübertragung. Der API-Key bleibt ausschließlich auf dem lokalen Proxy.
-Dauerhaft gespeichert werden ausschließlich die bestätigten Produkt- und
-Länder-Zuordnungen im `localStorage` des Nutzers.
+Es findet keine Übertragung von Rechnungsdaten an Dritte statt. Alle
+Verarbeitungsschritte (Einlesen, Produktzuordnung, Berechnungen,
+Excel-Erstellung) laufen ausschließlich im Browser. Dauerhaft gespeichert
+werden ausschließlich die bestätigten Produkt- und Länder-Zuordnungen im
+`localStorage` des Nutzers.
 
-## 7. Bekannte Grenzen
+## 9. Bekannte Grenzen
 
-- Claude ist die alleinige Quelle der Rechnungsdaten. Ohne erreichbaren Proxy
-  mit gültigem API-Key ist die App nicht funktionsfähig.
-- Die Erkennungsgenauigkeit hängt von Claudes Lesefähigkeit ab, nicht mehr von
-  eigenen Regex-/Layout-Heuristiken. Jeder Wert bleibt editierbar; von Claude
-  selbst gemeldete Unsicherheiten erscheinen als Warnung.
+- Das genaue Spaltenformat der "Zusammenfassenden Meldung" als Excel-Datei
+  ist noch nicht an einer echten Beispieldatei verifiziert (anders als das
+  Rechnungsformat, siehe Abschnitt 1) – die Spaltensuche über die Kopfzeile
+  ist robuster als feste Positionen, kann bei einer stark abweichenden
+  Struktur aber dennoch scheitern (dann erscheint eine Fehlermeldung statt
+  eines falschen Ergebnisses).
 - Die Toleranz von 0 kg führt bei rundungsbedingter Drift weiterhin häufiger
-  zu gesperrten Rechnungen (siehe Hinweis in Abschnitt 1).
-- Es gibt bewusst kein GitHub-Pages-Deployment: Ein reines Static-Hosting kann
-  den Proxy nicht betreiben, die App wäre dort nicht funktionsfähig.
+  zu gesperrten Rechnungen (siehe Hinweis in Abschnitt 3).
+- Ohne Lieferadresse in der Rechnungs-Excel-Datei lässt sich das
+  Bestimmungsland bei Drittland (`IDLD = 99`) nicht automatisch ableiten und
+  muss manuell ausgewählt werden.
 
 ---
 
-Nach diesem Konzept wurde ursprünglich implementiert; die deterministische
-PDF-Auswertung wurde seither vollständig durch das Auslesen über Claude
-ersetzt.
+Dieses Konzept wurde von der ursprünglichen deterministischen PDF-Auswertung
+über die Claude-Anbindung hin zu einem rein lokalen Excel-Import
+weiterentwickelt, um die App unabhängig von einem API-Key und als statische
+Anwendung (z. B. über GitHub Pages) betreibbar zu machen.

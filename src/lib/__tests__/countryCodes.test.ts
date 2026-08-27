@@ -25,8 +25,8 @@ describe('resolveCountryFromVatId', () => {
 })
 
 describe('crosscheckDestinationCountryWithVatId', () => {
-  it('überschreibt das von Claude gelesene Land bei Abweichung von der USt-IdNr.', () => {
-    const destination = { code: 'AT', source: 'ai' as const, isManual: false }
+  it('überschreibt das eingelesene Land bei Abweichung von der USt-IdNr.', () => {
+    const destination = { code: 'AT', source: 'excel' as const, isManual: false }
     const result = crosscheckDestinationCountryWithVatId(destination, 'BE0123456789')
     expect(result?.code).toBe('BE')
     expect(result?.source).toBe('vat-id-override')
@@ -35,7 +35,7 @@ describe('crosscheckDestinationCountryWithVatId', () => {
   })
 
   it('lässt das Land unverändert, wenn es zur USt-IdNr. passt', () => {
-    const destination = { code: 'BE', source: 'ai' as const, isManual: false }
+    const destination = { code: 'BE', source: 'excel' as const, isManual: false }
     const result = crosscheckDestinationCountryWithVatId(destination, 'BE0123456789')
     expect(result).toBe(destination)
   })
@@ -47,7 +47,7 @@ describe('crosscheckDestinationCountryWithVatId', () => {
   })
 
   it('lässt das Land unverändert, wenn die USt-IdNr. kein gültiges Präfix hat', () => {
-    const destination = { code: 'AT', source: 'ai' as const, isManual: false }
+    const destination = { code: 'AT', source: 'excel' as const, isManual: false }
     expect(crosscheckDestinationCountryWithVatId(destination, undefined)).toBe(destination)
     expect(crosscheckDestinationCountryWithVatId(destination, 'XY0123456789')).toBe(destination)
   })

@@ -3,11 +3,11 @@ import type { DestinationCountryInfo } from '../types'
 /**
  * Länder-Hilfsfunktionen für die Intrastat-Meldung.
  *
- * Das Bestimmungsland selbst liest Claude direkt aus der Rechnung (siehe
- * `aiInvoiceBuilder.ts`) und liefert bereits den ISO-3166-1-Alpha-2-Code.
- * Diese Datei stellt nur noch die Anzeige-Namen für die manuelle Auswahl in
- * der Prüfansicht sowie den fachlich vorgeschriebenen Abgleich mit der
- * USt-IdNr. des Warenempfängers bereit.
+ * Das Bestimmungsland selbst wird beim Excel-Import direkt aus der IDLD-
+ * Spalte übernommen (siehe `excelImport.ts`) und liegt bereits als
+ * ISO-3166-1-Alpha-2-Code vor. Diese Datei stellt nur noch die Anzeige-Namen
+ * für die manuelle Auswahl in der Prüfansicht sowie den fachlich
+ * vorgeschriebenen Abgleich mit der USt-IdNr. des Warenempfängers bereit.
  */
 
 const VALID_ISO_CODES = new Set([
@@ -73,9 +73,9 @@ export function resolveCountryFromVatId(vatId: string | undefined | null): strin
 }
 
 /**
- * Gleicht das von Claude gelesene Bestimmungsland mit dem Länderpräfix der
+ * Gleicht das eingelesene Bestimmungsland mit dem Länderpräfix der
  * USt-IdNr. des Warenempfängers ab. Das Länderkürzel muss zur USt-IdNr.
- * passen – bei einer Abweichung sticht die USt-IdNr. das gelesene
+ * passen – bei einer Abweichung sticht die USt-IdNr. das eingelesene
  * Bestimmungsland aus. Eine bereits manuell bestätigte Auswahl wird nicht
  * automatisch überschrieben.
  */

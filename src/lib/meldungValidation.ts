@@ -1,45 +1,32 @@
+import type { Invoice } from '../types'
+
 /**
  * Vergleicht die aus einer "Zusammenfassenden Meldung" gelesenen
- * Rechnungsnummern mit den hochgeladenen Rechnungsdateien – VOR der
- * eigentlichen Analyse durch Claude (siehe App.tsx, Schritt 2). Die
- * Rechnungsnummer einer hochgeladenen Datei wird dafür aus ihrem Dateinamen
- * abgeleitet (Ziffernfolgen ab 5 Stellen), da zu diesem Zeitpunkt noch keine
- * Analyseergebnisse vorliegen.
+ * Rechnungsnummern mit den bereits aus einer Excel-Datei geparsten
+ * Rechnungen (siehe App.tsx, Schritt 2) – über die exakte Rechnungsnummer,
+ * die beim Excel-Import sofort bekannt ist.
  */
 
-/** Alle Ziffernfolgen ab 5 Stellen in einem Dateinamen (mögliche Rechnungsnummern-Kandidaten). */
-export function extractCandidateNumbersFromFileName(fileName: string): string[] {
-  return fileName.match(/\d{5,}/g) ?? []
-}
-
-export type MeldungExtraEntry = { fileIndex: number; fileName: string }
+export type MeldungExtraEntry = { invoiceId: string; invoiceNumber: string }
 
 export type MeldungComparison = {
-  /** Rechnungsnummern aus der Meldung, zu denen keine hochgeladene Datei passt. */
+  /** Rechnungsnummern aus der Meldung, zu denen keine geparste Rechnung passt. */
   missing: string[]
-  /** Hochgeladene Dateien, deren Dateiname auf keine der Meldungs-Rechnungsnummern passt. */
+  /** Geparste Rechnungen, deren Nummer nicht auf der Meldung steht. */
   extra: MeldungExtraEntry[]
 }
 
-/**
- * Dateien ohne erkennbare Ziffernfolge werden weder als "fehlt" noch als
- * "zusätzlich" gewertet, da sich für sie keine Rechnungsnummer bestimmen
- * lässt – ein falscher Alarm wäre hier irreführender als gar keiner.
- */
-export function compareMeldungWithFiles(meldungNumbers: string[], files: File[]): MeldungComparison {
-  const fileCandidates = files.map((file) => extractCandidateNumbersFromFileName(file.name))
+export function compareMeldungWithInvoices(
+  meldungNumbers: string[],
+  invoices: Pick<Invoice, 'id' | 'invoiceNumber'>[],
+): MeldungComparison {
+  const invoiceNumbers = invoices.map((inv) => inv.invoiceNumber).filter((n): n is string => !!n)
 
-  const missing = meldungNumbers.filter(
-    (number) => !fileCandidates.some((candidates) => candidates.includes(number)),
-  )
+  const missing = meldungNumbers.filter((number) => !invoiceNumbers.includes(number))
 
-  const extra: MeldungExtraEntry[] = []
-  files.forEach((file, fileIndex) => {
-    const candidates = fileCandidates[fileIndex]
-    if (candidates.length > 0 && !candidates.some((c) => meldungNumbers.includes(c))) {
-      extra.push({ fileIndex, fileName: file.name })
-    }
-  })
+  const extra: MeldungExtraEntry[] = invoices
+    .filter((inv) => inv.invoiceNumber && !meldungNumbers.includes(inv.invoiceNumber))
+    .map((inv) => ({ invoiceId: inv.id, invoiceNumber: inv.invoiceNumber! }))
 
   return { missing, extra }
 }

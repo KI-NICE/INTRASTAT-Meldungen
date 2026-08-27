@@ -1,26 +1,18 @@
-import type { AiInvoiceFields, DestinationCountryInfo, Invoice, InvoiceDirection, InvoicePosition } from '../types'
-import { lookupAddressCountryOverride } from './mappingStore'
-import { MTZ_ARTIKEL_MAPPING } from '../data/mtzArtikelMapping'
+import type { Invoice, InvoiceDirection, InvoicePosition } from '../types'
 
 /**
- * Baut das interne Rechnungs-/Positionsmodell ausschließlich aus den von
- * Claude gelesenen Feldern auf. Claude ist die einzige Quelle der
- * Rechnungsdaten – es gibt keine eigene, deterministische PDF-Auswertung
- * mehr, gegen die abgeglichen werden könnte.
+ * Baut das interne Rechnungs-/Positionsmodell für manuell erfasste
+ * Rechnungen auf (siehe excelImport.ts für den Excel-Import-Weg).
  */
 
 /**
  * Artikelnummern mit dem Präfix "09" sind grundsätzlich keine Warenpositionen
- * (Frachtkosten, sonstige Zuschläge): Sie wiegen nie etwas, werden nicht als
- * eigene Intrastat-Zeile gemeldet, und ihr Betrag wird anteilig nach
- * Wertanteil auf die übrigen (echten) Positionen der Rechnung umgelegt.
- * Artikelnummer 090025 (Frachtkosten) ist der wichtigste, aber nicht einzige
- * Fall dieser Gruppe.
- *
- * Materialteuerungszuschlag-Positionen (siehe `MTZ_ARTIKEL_MAPPING`) beginnen
- * ebenfalls mit "09", werden aber NICHT anteilig verteilt, sondern – wenn die
- * erwartete Folgeposition erkannt wird – direkt der zugehörigen
- * Artikelposition zugerechnet (siehe `classifyNonMerchandisePositions`).
+ * (Frachtkosten, sonstige Zuschläge, Materialteuerungszuschläge): Sie wiegen
+ * nie etwas und werden nicht als eigene Intrastat-Zeile gemeldet. Ihr Betrag
+ * wird entweder anteilig nach Wertanteil auf die übrigen (echten) Positionen
+ * der Rechnung umgelegt oder – bei erkannten Materialteuerungszuschlägen –
+ * direkt der vorangehenden Artikelposition zugerechnet (siehe
+ * excelImport.attributeMtzToPreviousPosition).
  */
 export function isNonMerchandiseArticleNumber(articleNumberRaw: string | undefined): boolean {
   return !!articleNumberRaw && articleNumberRaw.startsWith('09')
@@ -94,200 +86,7 @@ export function deriveReferencePeriod(dateRaw: string | undefined): { month: str
   return { month, year }
 }
 
-/**
- * Bestimmt das Bestimmungsland: Eine bereits für genau diese Adresse
- * gelernte Zuordnung hat Vorrang vor dem von Claude gelesenen Code (siehe
- * adressgenaues Lernverhalten in `mappingStore.ts`). Der Abgleich mit der
- * USt-IdNr. erfolgt separat (siehe `countryCodes.crosscheckDestinationCountryWithVatId`).
- */
-export function resolveDestinationCountry(
-  aiCode: string | null | undefined,
-  addressText: string | null | undefined,
-): DestinationCountryInfo {
-  const learned = lookupAddressCountryOverride(addressText)
-  if (learned) {
-    return { code: learned, source: 'gelernte-zuordnung', isManual: false, needsConfirmation: false }
-  }
-  if (aiCode) {
-    return { code: aiCode, source: 'ai', isManual: false, needsConfirmation: false }
-  }
-  return { code: null, source: 'unresolved', isManual: false, needsConfirmation: true }
-}
-
-type AiPositionField = NonNullable<AiInvoiceFields['positions']>[number]
-
-function buildPosition(raw: AiPositionField, index: number): InvoicePosition {
-  const customsCode = raw.customsCode?.replace(/\D/g, '') || undefined
-  const articleNumberRaw = raw.articleNumber?.trim() || undefined
-  const isTransportCost = isNonMerchandiseArticleNumber(articleNumberRaw)
-  const amountEur = raw.amountEur ?? undefined
-  const isNegativeAmount = amountEur != null && amountEur < 0
-  const isCreditOrDiscountOrNegative = !isTransportCost && (raw.isCreditOrDiscount === true || isNegativeAmount)
-
-  return {
-    id: `pos-${index + 1}-${raw.positionNumber ?? index + 1}`,
-    lineNo: index + 1,
-    positionNumber: raw.positionNumber ?? undefined,
-    productNameRaw: raw.productDescription ?? '',
-    customsCodeRaw: raw.customsCode ?? undefined,
-    customsCode,
-    quantityRaw: raw.quantity != null ? String(raw.quantity) : undefined,
-    quantity: raw.quantity ?? undefined,
-    amountRaw: amountEur != null ? String(amountEur) : undefined,
-    amountEur,
-    isSpecialUnit: customsCode === '39233010',
-    articleNumberRaw,
-    isTransportCost,
-    isMtzSurcharge: false,
-    isCreditOrDiscountOrNegative,
-    negativeReason: raw.isCreditOrDiscount === true ? 'von Claude als Gutschrift/Storno/Rabatt erkannt' : undefined,
-    manualCorrections: [],
-    issues: [],
-    status: 'ok',
-    requiresManualDecision: isCreditOrDiscountOrNegative,
-  }
-}
-
-/**
- * Erkennt Materialteuerungszuschlag-Positionen anhand von
- * `MTZ_ARTIKEL_MAPPING` und rechnet ihren Betrag der jeweils vorangehenden
- * Artikelposition zu (Reihenfolge auf der Rechnung in aller Regel:
- * Artikelposition, MTZ-Position, Artikelposition, MTZ-Position, …).
- *
- * Eine erkannte MTZ-Position wird nicht mehr anteilig auf alle Positionen
- * verteilt (`isTransportCost`), sondern ausschließlich der einen zugehörigen
- * Artikelposition direkt zugerechnet (`isMtzSurcharge`). Passt die
- * Reihenfolge in Einzelfällen nicht (z. B. Artikel ohne direkt folgende
- * MTZ-Position), bleibt die Position als allgemeine "09"-Position stehen und
- * wird wie Frachtkosten anteilig verteilt – es wird nichts verworfen.
- */
-function classifyNonMerchandisePositions(positions: InvoicePosition[]): InvoicePosition[] {
-  const result = positions.map((p) => ({ ...p }))
-
-  for (let i = 0; i < result.length - 1; i++) {
-    const parent = result[i]
-    if (parent.isTransportCost || parent.isCreditOrDiscountOrNegative) continue
-    if (!parent.articleNumberRaw) continue
-
-    const expectedMtzArticle = MTZ_ARTIKEL_MAPPING[parent.articleNumberRaw]
-    if (!expectedMtzArticle) continue
-
-    const candidate = result[i + 1]
-    if (!candidate.isTransportCost || candidate.articleNumberRaw !== expectedMtzArticle) continue
-
-    candidate.isTransportCost = false
-    candidate.isMtzSurcharge = true
-    parent.mtzSurchargeEurRaw = candidate.amountEur ?? 0
-    parent.amountEur = (parent.amountEur ?? 0) + (candidate.amountEur ?? 0)
-  }
-
-  return result
-}
-
-/**
- * Baut die Rechnung aus dem Ergebnis von `readInvoiceWithAi` auf. `result`
- * ist `null`, wenn das Auslesen dieser Rechnung fehlgeschlagen ist – dann
- * bleibt die Rechnung leer und gesperrt (`status: 'error'`), mit der
- * Fehlermeldung in `ai.error`.
- */
-export function buildInvoiceFromAi(
-  id: string,
-  fileName: string,
-  richtung: InvoiceDirection,
-  result: { model: string; fields: AiInvoiceFields } | null,
-  error?: string,
-): Invoice {
-  if (!result) {
-    return {
-      id,
-      fileName,
-      richtung,
-      language: 'de',
-      positions: [],
-      manualCorrections: [],
-      issues: [],
-      status: 'error',
-      ai: { status: 'fehler', uncertainFields: [], error: error ?? 'Unbekannter Fehler' },
-    }
-  }
-
-  const { model, fields } = result
-  const period = deriveReferencePeriod(fields.invoiceDate ?? undefined)
-  const destinationCountry = resolveDestinationCountry(fields.destinationCountryCode, fields.destinationAddressText)
-  const positions = classifyNonMerchandisePositions((fields.positions ?? []).map((p, index) => buildPosition(p, index)))
-  const columnsEGHI = resolveColumnsEGHI(richtung, fields)
-
-  return {
-    id,
-    fileName,
-    richtung,
-    language: fields.language === 'en' ? 'en' : 'de',
-    invoiceNumber: fields.invoiceNumber ?? undefined,
-    invoiceDateRaw: fields.invoiceDate ?? undefined,
-    referenceMonth: period?.month,
-    referenceYear: period?.year,
-    destinationCountry,
-    destinationAddressText: fields.destinationAddressText ?? undefined,
-    destinationAddressKind: fields.destinationAddressUsed ?? undefined,
-    vatId: fields.vatId?.replace(/\s+/g, '') ?? undefined,
-    netWeightTotal: fields.netWeightTotalKg ?? undefined,
-    freightCost: fields.freightCostEur ?? undefined,
-    ...columnsEGHI,
-    positions,
-    manualCorrections: [],
-    issues: [],
-    status: 'pending',
-    ai: {
-      status: 'fertig',
-      model,
-      // "netWeightTotalKg" und "freightCostEur" werden bewusst nie als
-      // unsicheres Feld gemeldet: Das Netto-Gesamtgewicht wird zusätzlich
-      // über die Gewichtssummen-Prüfung (siehe validation.ts) abgesichert,
-      // die Frachtkosten fließen ohnehin nur anteilig in Spalte N ein –
-      // zusätzliche Unsicherheits-Meldungen dafür wären nur Rauschen. Bei
-      // Eingangsrechnungen sind "destinationCountryCode"/"destinationAddressUsed"
-      // irrelevant (Spalte F entfällt dort), entsprechende Meldungen wären
-      // ebenfalls nur Rauschen.
-      uncertainFields: (fields.uncertainFields ?? []).filter(
-        (f) =>
-          typeof f === 'string' &&
-          f.trim().length > 0 &&
-          f !== 'netWeightTotalKg' &&
-          f !== 'freightCostEur' &&
-          !(richtung === 'E' && (f === 'destinationCountryCode' || f === 'destinationAddressUsed')),
-      ),
-    },
-  }
-}
-
-/**
- * Bestimmt die Werte für die Mustertabellen-Spalten E, G, H, I.
- *
- * Ausgangsrechnungen: E/G immer leer, H fest "09" (Ursprungsbundesland des
- * Unternehmens), I fest "DE".
- *
- * Eingangsrechnungen: F, H und O entfallen vollständig (siehe
- * `excelTemplate.buildExportRow`); G ist fest "09" (Bestimmungsbundesland =
- * das eigene Bundesland, spiegelbildlich zu H bei Ausgangsrechnungen). Nur E
- * (Versendungsmitgliedstaat) und I (Ursprungsland) werden weiterhin von
- * Claude gelesen bzw. sind sonst in der Prüfansicht manuell einzutragen.
- */
-function resolveColumnsEGHI(
-  richtung: InvoiceDirection,
-  fields: AiInvoiceFields,
-): Pick<Invoice, 'versendungsMitgliedstaat' | 'bestimmungsBundesland' | 'ursprungsBundesland' | 'ursprungsland'> {
-  if (richtung === 'V') {
-    return { versendungsMitgliedstaat: '', bestimmungsBundesland: '', ursprungsBundesland: '09', ursprungsland: 'DE' }
-  }
-  return {
-    versendungsMitgliedstaat: fields.versendungsmitgliedstaatCode?.trim() || undefined,
-    bestimmungsBundesland: '09',
-    ursprungsBundesland: '',
-    ursprungsland: fields.ursprungslandCode?.trim() || undefined,
-  }
-}
-
-/** Baut eine leere Rechnung für die vollständig manuelle Erfassung auf (kein Claude-Auslesen). */
+/** Baut eine leere Rechnung für die vollständig manuelle Erfassung auf. */
 export function buildManualInvoice(id: string, richtung: InvoiceDirection): Invoice {
   return {
     id,
