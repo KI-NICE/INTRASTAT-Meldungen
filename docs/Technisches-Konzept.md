@@ -75,13 +75,13 @@ Intrastat-Zeile, siehe `excelImport.isNonMerchandiseArticleNumber`):
 
 ## 2. Format der "Zusammenfassenden Meldung" (Excel)
 
-Die Spalten "Beleg-Nr." und "Text" werden **anhand der Kopfzeile** gesucht
-(nicht anhand fester Positionen), da das genaue Format noch nicht an einer
-echten Beispieldatei verifiziert wurde. Eine Zeile zählt als Rechnung, wenn
-ihr Buchungstext "rechnung" enthält (deckt "Ausgangsrechnung" und
-"Eingangsrechnung" ab); Zeilen wie "Skonto" oder "Gutschrift" werden dadurch
-automatisch ausgeschlossen. Werden die Spalten nicht gefunden, meldet die App
-einen Fehler statt stillschweigend falsche Ergebnisse zu liefern.
+Die Datei hat **ein Tabellenblatt je Seite** (A4) – `excelImport.parseExcelMeldungInvoiceNumbers`
+durchsucht deshalb IMMER alle Tabellenblätter, nicht nur das erste. Je Blatt
+gilt die erste Zeile als Kopfzeile. Feste Spalten (1-basiert): **D** (4) =
+Rechnungsdatum, **F** (6) = Rechnungsnummer. Eine Zeile zählt nur, wenn beide
+Spalten gefüllt sind (schließt leere bzw. Summenzeilen aus); jede
+Rechnungsnummer wird nur einmal in den Abgleich übernommen, auch wenn sie
+mehrfach vorkommt (mehrere Buchungszeilen derselben Rechnung).
 
 ## 3. Bestätigte fachliche Regeln (Zusammenfassung der Antworten)
 
@@ -203,12 +203,6 @@ werden ausschließlich die bestätigten Produkt- und Länder-Zuordnungen im
 
 ## 9. Bekannte Grenzen
 
-- Das genaue Spaltenformat der "Zusammenfassenden Meldung" als Excel-Datei
-  ist noch nicht an einer echten Beispieldatei verifiziert (anders als das
-  Rechnungsformat, siehe Abschnitt 1) – die Spaltensuche über die Kopfzeile
-  ist robuster als feste Positionen, kann bei einer stark abweichenden
-  Struktur aber dennoch scheitern (dann erscheint eine Fehlermeldung statt
-  eines falschen Ergebnisses).
 - Die Toleranz von 0 kg führt bei rundungsbedingter Drift weiterhin häufiger
   zu gesperrten Rechnungen (siehe Hinweis in Abschnitt 3).
 - Ohne Lieferadresse in der Rechnungs-Excel-Datei lässt sich das

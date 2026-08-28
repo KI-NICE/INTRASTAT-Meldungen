@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from 'vitest'
 import ExcelJS from 'exceljs'
-import { parseExcelInvoices } from '../excelImport'
+import { parseExcelInvoices, parseExcelMeldungInvoiceNumbers } from '../excelImport'
 
 const HEADER = [
   'RENR', 'RGDA', 'IDLD', 'IDNR', 'AFHP', 'TENR', 'BEZG', 'BEZG', 'MENG', '00010',
@@ -153,5 +153,55 @@ describe('parseExcelInvoices', () => {
     ])
     const invoices = await parseExcelInvoices(file, EMPTY_WEIGHT_MAPS, '06', '2026')
     expect(invoices.map((inv) => inv.invoiceNumber).sort()).toEqual(['167890', '167924'])
+  })
+})
+
+describe('parseExcelMeldungInvoiceNumbers', () => {
+  async function buildMeldungFile(sheets: (string | number | null)[][][]): Promise<File> {
+    const workbook = new ExcelJS.Workbook()
+    sheets.forEach((rows, index) => {
+      const sheet = workbook.addWorksheet(`Seite${index + 1}`)
+      sheet.addRow(['USt-IdNr', 'Kontonummer', 'Bezeichnung', 'Datum', 'Periode', 'Beleg-Nr.', 'Text', 'Betrag'])
+      for (const row of rows) sheet.addRow(row)
+    })
+    const buffer = await workbook.xlsx.writeBuffer()
+    return new File([buffer], 'meldung.xlsx')
+  }
+
+  it('liest die Rechnungsnummer aus Spalte F, sofern Spalte D (Datum) ebenfalls gefüllt ist', async () => {
+    const file = await buildMeldungFile([
+      [
+        ['ATU11574303', 19101, 'Spiral Reihs', '24.06.2026', '06.2026', 168049, 'Ausgangsrechnung', 3344.52],
+        ['ATU11574303', 19101, 'Spiral Reihs', null, '06.2026', null, 'Summe', 3344.52],
+      ],
+    ])
+    const numbers = await parseExcelMeldungInvoiceNumbers(file)
+    expect(numbers).toEqual(['168049'])
+  })
+
+  it('durchsucht alle Tabellenblätter (1 Blatt = 1 Seite)', async () => {
+    const file = await buildMeldungFile([
+      [['ATU1', 1, 'Kunde A', '24.06.2026', '06.2026', 168049, 'Ausgangsrechnung', 100]],
+      [['ATU2', 2, 'Kunde B', '25.06.2026', '06.2026', 168050, 'Ausgangsrechnung', 200]],
+    ])
+    const numbers = await parseExcelMeldungInvoiceNumbers(file)
+    expect(numbers.sort()).toEqual(['168049', '168050'])
+  })
+
+  it('gibt jede Rechnungsnummer nur einmal zurück, auch wenn sie mehrfach vorkommt', async () => {
+    const file = await buildMeldungFile([
+      [
+        ['ATU1', 1, 'Kunde A', '24.06.2026', '06.2026', 168049, 'Ausgangsrechnung', 100],
+        ['ATU1', 1, 'Kunde A', '24.06.2026', '06.2026', 168049, 'Ausgangsrechnung', 50],
+      ],
+    ])
+    const numbers = await parseExcelMeldungInvoiceNumbers(file)
+    expect(numbers).toEqual(['168049'])
+  })
+
+  it('ignoriert die Kopfzeile jedes Tabellenblatts', async () => {
+    const file = await buildMeldungFile([[]])
+    const numbers = await parseExcelMeldungInvoiceNumbers(file)
+    expect(numbers).toEqual([])
   })
 })

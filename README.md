@@ -80,6 +80,14 @@ Fehlt das Gesamt-Nettogewicht oder eine Zolltarifnummer, bleibt das Feld in
 der Prüfansicht leer und ist dort manuell nachzutragen – wie bei manuell
 erfassten Rechnungen auch.
 
+## Format der "Zusammenfassenden Meldung" (Excel)
+
+Die Datei hat **ein Tabellenblatt je Seite** (A4) – alle Tabellenblätter
+werden durchsucht. Je Blatt gilt die erste Zeile als Kopfzeile. Feste
+Spalten: **D** = Rechnungsdatum, **F** = Rechnungsnummer. Eine Zeile zählt
+nur, wenn beide Spalten gefüllt sind; jede Rechnungsnummer wird nur einmal
+in den Abgleich übernommen, auch wenn sie mehrfach vorkommt.
+
 ## Zuordnungen und Lernverhalten
 
 **Produkte.** Gewicht aus der Produktbeschreibung → gelernte Zuordnung über
@@ -158,11 +166,6 @@ gestellt werden.
 
 ## Bekannte Einschränkungen
 
-- Das genaue Spaltenformat der "Zusammenfassenden Meldung" als Excel-Datei
-  ist noch nicht an einer echten Beispieldatei verifiziert (anders als das
-  Rechnungsformat) – die Spalten "Beleg-Nr." und "Text" werden anhand der
-  Kopfzeile gesucht, was robuster ist als feste Spaltenpositionen, aber bei
-  einer abweichenden Struktur zu einer Fehlermeldung führen kann.
 - Die Toleranz zwischen berechnetem und ausgewiesenem Netto-Gesamtgewicht ist
   fachlich auf **0 kg** festgelegt. Da jede Position einzeln aufgerundet wird,
   kann Rundungsdrift bei vielen Positionen zu gesperrten Rechnungen führen.

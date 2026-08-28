@@ -254,51 +254,37 @@ function resolveDestinationCountryFromIdld(idld: string): DestinationCountryInfo
   return { code, source: 'excel', isManual: false, needsConfirmation: false }
 }
 
+/** Feste Spalten in der "Zusammenfassenden Meldung": D = Rechnungsdatum, F = Rechnungsnummer. */
+const MELDUNG_DATE_COL = 4
+const MELDUNG_INVOICE_NUMBER_COL = 6
+
 /**
  * Liest die Rechnungsnummern aus einer "Zusammenfassenden Meldung" ein, die
  * ebenfalls als Excel-Datei bereitgestellt wird (siehe App.tsx, Meldungs-
- * Validierung vor der Prüfung). Anders als bei den Rechnungen selbst ist der
- * genaue Spaltenaufbau dieser Datei noch nicht an einer echten Beispieldatei
- * verifiziert – die Spalten werden deshalb ANHAND DER KOPFZEILE gesucht
- * (Spalte mit "beleg" im Namen = Rechnungsnummer, Spalte mit "text" im Namen
- * = Buchungstext), nicht anhand fester Positionen. Das ist robuster gegen
- * eine abweichende Spaltenreihenfolge, sollte aber mit einer echten Datei
- * gegengeprüft werden.
+ * Validierung vor der Prüfung). Die Datei hat EIN Tabellenblatt je Seite
+ * (1 Blatt = 1 Seite A4) – es werden deshalb IMMER ALLE Tabellenblätter
+ * durchsucht, nicht nur das erste. Je Blatt gilt die erste Zeile als
+ * Kopfzeile und wird übersprungen.
  *
- * Eine Zeile zählt als Rechnung, wenn ihr Buchungstext "rechnung" enthält
- * (deckt "Ausgangsrechnung" und "Eingangsrechnung" ab) – Zeilen mit "Skonto",
- * "Gutschrift" o. Ä. enthalten das nicht und werden dadurch automatisch
- * ausgeschlossen. Jede Rechnungsnummer wird nur einmal zurückgegeben, auch
+ * Eine Zeile zählt nur dann, wenn sowohl Spalte D (Rechnungsdatum) als auch
+ * Spalte F (Rechnungsnummer) gefüllt sind – das schließt leere bzw.
+ * Summenzeilen aus. Jede Rechnungsnummer wird nur einmal zurückgegeben, auch
  * wenn sie mehrfach vorkommt (mehrere Buchungszeilen derselben Rechnung).
  */
 export async function parseExcelMeldungInvoiceNumbers(file: File): Promise<string[]> {
   const arrayBuffer = await file.arrayBuffer()
   const workbook = new ExcelJS.Workbook()
   await workbook.xlsx.load(arrayBuffer as ExcelJS.Buffer)
-  const worksheet = workbook.worksheets[0]
-  if (!worksheet) return []
-
-  const headerRow = worksheet.getRow(1)
-  let belegCol = -1
-  let textCol = -1
-  headerRow.eachCell((cell, colNumber) => {
-    const header = cellString(cell.value).toLowerCase()
-    if (belegCol === -1 && header.includes('beleg')) belegCol = colNumber
-    if (textCol === -1 && header.includes('text')) textCol = colNumber
-  })
-  if (belegCol === -1 || textCol === -1) {
-    throw new Error(
-      'Die Spalten "Beleg-Nr." und "Text" wurden in der Kopfzeile nicht gefunden. Bitte Format der Meldung prüfen.',
-    )
-  }
 
   const numbers = new Set<string>()
-  worksheet.eachRow((row, rowNumber) => {
-    if (rowNumber === 1) return
-    const belegNr = cellString(row.getCell(belegCol).value)
-    const text = cellString(row.getCell(textCol).value)
-    if (belegNr && /rechnung/i.test(text)) numbers.add(belegNr)
-  })
+  for (const worksheet of workbook.worksheets) {
+    worksheet.eachRow((row, rowNumber) => {
+      if (rowNumber === 1) return // Kopfzeile
+      const date = cellString(row.getCell(MELDUNG_DATE_COL).value)
+      const invoiceNumber = cellString(row.getCell(MELDUNG_INVOICE_NUMBER_COL).value)
+      if (date && invoiceNumber) numbers.add(invoiceNumber)
+    })
+  }
 
   return [...numbers]
 }
